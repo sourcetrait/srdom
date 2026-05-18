@@ -52,4 +52,44 @@ h4 { font-size: 1.25rem; }
 h5 { font-size: 1.125rem; }
 h6 { font-size: 1rem; }
 
+dt {
+    color: #ffb86c;
+}
 
+span.constraint {
+    font-style: italic;
+}
+
+span.constraint::before {
+    content: "(";
+    font-style: italic;
+}
+
+span.constraint::after {
+    content: ")";
+    font-style: italic;
+}
+
+#project {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 1em;
+  align-items: baseline;
+}
+
+#project > dt {
+  font-weight: bold;
+  text-align: right;
+}
+
+#project > dd {
+  margin: 0;
+}
+
+#project > dd > p {
+  margin: 0;
+}
+
+#project-version > p {
+  font-family: monospace;
+}
