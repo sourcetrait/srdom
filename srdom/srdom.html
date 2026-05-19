@@ -27,6 +27,7 @@
 <dt>License</dt>
 <dd id="project-license"><p><a href="https://creativecommons.org/licenses/by/4.0/legalcode">CC-BY-4.0</a></p></dd>
 </dl>
+<p>Please refer to the <a href="#using-srdom">usage</a> section for details on querying this DOM for SRD data.</p>
 <h2>Attribution: SRD</h2>
 <p class="attribution"><strong>SRDOM</strong> is a derivative of the <strong>System Reference Document</strong> (<strong>SRD</strong>)
 and is conveyed to you under the same license and terms.</p>
@@ -254,6 +255,12 @@ by <a href="https://company.wizards.com">Wizards of the Coast LLC</a>, available
     <ol>
       <li><a href="#index-spells">Index of Spells</a> <span class="page">107</span></li>
       <li><a href="#index-stat-blocks">Index of Stat Blocks</a> <span class="page">258</span></li>
+    </ol>
+  </li>
+  <li><a href="#using-srdom">Using SRDOM</a>
+    <ol>
+      <li><a href="#usage-enumerate-spells">Enumerate Spells</a></li>
+      <li><a href="#usage-retrieve-spell-data">Retrieve Spell Data</a></li>
     </ol>
   </li>
 </ol>
@@ -34746,6 +34753,43 @@ by <a href="https://company.wizards.com">Wizards of the Coast LLC</a>, available
   <li><a href="#creature-zombie">Zombie</a> <span class="page">343</span></li>
 </ol>
 </nav>
+</section>
+<section id="using-srdom">
+<h2>Using SRDOM</h2>
+<p><strong>SRDOM</strong> is a direct conversion of the <strong>SRD</strong> source material into a deliberately structured HTML document object model. The source-code of this HTML file is designed to allow DOM queries to be ran in order to procedurally enumerate and retrieve information found in the source material as raw data.</p>
+<p>The example queries listed here use Javascript intended to be ran from your browser's Developer Console. When writing a data parser in your preferred programming language, you will need to convert these examples accordingly.</p>
+
+<h3 id="usage-enumerate-spells">Enumerate Spells</h3>
+<p>Spell names and slugs can be enumerated by:</p>
+<pre><code class="language-javascript">// array[[spell_slug, spell_name]]
+const spell_index = (() => {
+    let spells = document.querySelectorAll("#index-spells li a");
+    spells = [...spells].map(a => [a.href.split('#spell-').pop(), a.innerText]);
+    return spells;
+})();
+</code></pre>
+
+<h3 id="usage-retrieve-spell-data">Retrieve Spell Data</h3>
+<p>Spell data can be retrieved by:</p>
+<pre><code class="language-javascript">let spell = ((spell_slug) => {
+    let node = document.querySelector(`#spell-${spell_slug}`);
+    let cast = node.querySelector("table.spell-cast");
+    let spell = {
+        slug: spell_slug,
+        name: node.querySelector(".spell-name").innerText,
+        level: node.querySelector("span.spell-level")?.innerText ?? null,
+        upgrade: node.querySelector("span.spell-upgrade")?.innerText ?? null,
+        school: node.querySelector("span.spell-school").innerText,
+        classes: node.querySelector("span.spell-classes").innerText,
+        cast_time: cast.querySelector("td.spell-cast-time").innerText,
+        range: cast.querySelector("td.spell-cast-range").innerText,
+        components: cast.querySelector("td.spell-cast-components").innerText,
+        duration: cast.querySelector("td.spell-cast-duration").innerText,
+        description_node: node.querySelector("div.spell-description"),
+    };
+    return spell;
+})('acid-arrow'); // example for slug of 'acid-arrow'
+</code></pre>
 </section>
 </body>
 </html>
