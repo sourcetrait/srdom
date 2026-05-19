@@ -1,0 +1,20 @@
+<!--
+SRDOM Logo
+Copyright (C) 2026 Asmov LLC https://asmov.software
+CC-BY-4.0 https://creativecommons.org/licenses/by/4.0/legalcode
+-->
+<svg
+    version="1.1" xmlns="http://www.w3.org/2000/svg"
+    width="100" height="100"
+    viewBox="0 0 100 100">
+<style>
+path {
+    fill: yellow;
+    stroke: black;
+    stroke-width: 3;
+}
+</style>
+
+<path d="M 5 5 L 95 5 C 45 5, 50 45, 50 45 C 50 45, 5 5, 5 5 Z" />
+
+</svg>
