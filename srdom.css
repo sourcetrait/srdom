@@ -93,3 +93,45 @@ span.constraint::after {
 #project-version > p {
   font-family: monospace;
 }
+
+span.spell-level::before {
+    content: "Level ";
+}
+
+span.spell-classes::before {
+    content: "("
+}
+
+span.spell-classes::after {
+    content: ")"
+}
+
+nav ol {
+    list-style: none;
+    padding: 0 0 0 0.25em;
+}
+
+nav li {
+    list-style: none;
+    padding: 0 0 0 0.75em;
+}
+
+span.page {
+    font-style: italic;
+    color: gray;
+    font-size: 0.75em;
+}
+
+span.page::before {
+    content: "(p.";
+}
+
+span.page::after {
+    content: ")";
+}
+
+pre {
+    font-family: monospace;
+    border: 1px dashed gray;
+    padding: 10px;
+}
