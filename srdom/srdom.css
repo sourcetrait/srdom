@@ -105,3 +105,27 @@ span.spell-classes::before {
 span.spell-classes::after {
     content: ")"
 }
+
+nav ol {
+    list-style: none;
+    padding: 0 0 0 0.25em;
+}
+
+nav li {
+    list-style: none;
+    padding: 0 0 0 0.75em;
+}
+
+span.page {
+    font-style: italic;
+    color: gray;
+    font-size: 0.75em;
+}
+
+span.page::before {
+    content: "(";
+}
+
+span.page::after {
+    content: ")";
+}
