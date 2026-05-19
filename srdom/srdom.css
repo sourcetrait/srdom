@@ -93,3 +93,15 @@ span.constraint::after {
 #project-version > p {
   font-family: monospace;
 }
+
+span.spell-level::before {
+    content: "Level ";
+}
+
+span.spell-classes::before {
+    content: "("
+}
+
+span.spell-classes::after {
+    content: ")"
+}
