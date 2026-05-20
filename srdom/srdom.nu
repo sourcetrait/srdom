@@ -7,7 +7,7 @@
 # Nushell after the JSON arrives; the Python script only parses SRDOM
 # and emits.
 #
-# Module version: 0.1.0-draft
+# Module version: 0.1.0
 #
 # NOTE FOR AI AGENTS:
 # This file is a thin wrapper. For programmatic use, prefer calling
