@@ -7,7 +7,7 @@
 # Nushell after the JSON arrives; the Python script only parses SRDOM
 # and emits.
 #
-# Module version: 0.1.0
+# Module version: 0.2.0-draft
 #
 # NOTE FOR AI AGENTS:
 # This file is a thin wrapper. For programmatic use, prefer calling
@@ -52,11 +52,13 @@
 # This module mirrors the srdom.py CLI surface 1:1. Every option available
 # to the Python CLI is exposed identically here.
 #
-#     srdom.py spells       ↔  srdom spells       ↔  nu srdom.nu spells
-#     srdom.py creatures    ↔  srdom creatures    ↔  nu srdom.nu creatures
-#     srdom.py spell X      ↔  srdom spell X      ↔  nu srdom.nu spell X
-#     srdom.py creature X   ↔  srdom creature X   ↔  nu srdom.nu creature X
-#     srdom.py test         ↔  srdom test         ↔  nu srdom.nu test
+#     srdom.py spells          ↔  srdom spells          ↔  nu srdom.nu spells
+#     srdom.py creatures       ↔  srdom creatures       ↔  nu srdom.nu creatures
+#     srdom.py magic-items     ↔  srdom magic-items     ↔  nu srdom.nu magic-items
+#     srdom.py spell X         ↔  srdom spell X         ↔  nu srdom.nu spell X
+#     srdom.py creature X      ↔  srdom creature X      ↔  nu srdom.nu creature X
+#     srdom.py magic-item X    ↔  srdom magic-item X    ↔  nu srdom.nu magic-item X
+#     srdom.py test            ↔  srdom test            ↔  nu srdom.nu test
 #
 # All accept the same --source and --content flags.
 
@@ -154,6 +156,38 @@ export def "srdom creature" [
     _run (_build_args "creature" --content $content --source $source --slug $slug) | from json
 }
 
+# Emit all magic items as a Nushell table.
+#
+# Each row includes structural fields including `category`, `category_description`,
+# `rarities` (list), `rarity_tiers` (paired list), `requires_attunement` (bool),
+# `attunement` (full clause or null), `variants` (list), `num_variants` (int).
+#
+# Examples:
+#     srdom magic-items | where category == "Wondrous Item"
+#     srdom magic-items | where requires_attunement == true | length
+#     srdom magic-items | where num_variants > 0 | get title
+#     srdom magic-items | where ("Legendary" in rarities) | select name category
+export def "srdom magic-items" [
+    --content (-c): string
+    --source (-s): string
+] {
+    _run (_build_args "magic-items" --content $content --source $source) | from json
+}
+
+# Emit one magic item as a Nushell record.
+#
+# Examples:
+#     srdom magic-item holy-avenger
+#     srdom magic-item weapon | get rarity_tiers
+#     srdom magic-item figurine-of-wondrous-power | get creature
+export def "srdom magic-item" [
+    slug: string             # the magic item slug (e.g., "holy-avenger", "weapon")
+    --content (-c): string
+    --source (-s): string
+] {
+    _run (_build_args "magic-item" --content $content --source $source --slug $slug) | from json
+}
+
 # Run the Python library's self-test against the resolved source.
 # Output is human-readable text, NOT JSON.
 #
@@ -174,8 +208,8 @@ export def "srdom test" [
 # Dispatches to the same helpers as the exported `srdom <noun>` commands so
 # both invocation paths share one code path.
 def main [
-    command?: string   # spells | creatures | spell | creature | test
-    slug?: string      # required for `spell` and `creature`
+    command?: string   # spells | creatures | magic-items | spell | creature | magic-item | test
+    slug?: string      # required for `spell`, `creature`, `magic-item`
     --content (-c): string
     --source (-s): string
 ] {
@@ -183,24 +217,26 @@ def main [
         print "Usage: srdom.nu <command> [slug] [--content md|html] [--source <ref>]"
         print ""
         print "Commands:"
-        print "  spells              Emit all spells as JSON"
-        print "  creatures           Emit all creatures as JSON"
-        print "  spell <slug>        Emit one spell as JSON"
-        print "  creature <slug>     Emit one creature as JSON"
-        print "  test                Run library self-test (text output)"
+        print "  spells               Emit all spells as JSON"
+        print "  creatures            Emit all creatures as JSON"
+        print "  magic-items          Emit all magic items as JSON"
+        print "  spell <slug>         Emit one spell as JSON"
+        print "  creature <slug>      Emit one creature as JSON"
+        print "  magic-item <slug>    Emit one magic item as JSON"
+        print "  test                 Run library self-test (text output)"
         print ""
         print "See header comment for module-import alternative."
         return
     }
 
-    if $command in ["spell" "creature"] and $slug == null {
+    if $command in ["spell" "creature" "magic-item"] and $slug == null {
         print -e $"Error: '($command)' requires a slug argument"
         exit 1
     }
 
-    let args = if $command in ["spells" "creatures" "test"] {
+    let args = if $command in ["spells" "creatures" "magic-items" "test"] {
         _build_args $command --content $content --source $source
-    } else if $command in ["spell" "creature"] {
+    } else if $command in ["spell" "creature" "magic-item"] {
         _build_args $command --content $content --source $source --slug $slug
     } else {
         print -e $"Error: unknown command '($command)'"

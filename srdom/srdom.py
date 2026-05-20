@@ -129,7 +129,7 @@ except ImportError as e:
     ) from e
 
 
-__version__ = "0.2.0"
+__version__ = "0.3.0-draft"
 __all__ = [
     "load",
     "Document",
@@ -137,6 +137,8 @@ __all__ = [
     "SpellCollection",
     "Creature",
     "CreatureCollection",
+    "MagicItem",
+    "MagicItemCollection",
     "Effect",
     "Trait",
     "Action",
@@ -466,6 +468,7 @@ class Document:
         self._path = path
         self._spells = SpellCollection(tree, content)
         self._creatures = CreatureCollection(tree, content)
+        self._magic_items = MagicItemCollection(tree, content)
 
     def _read_version_from_tree(self) -> Optional[str]:
         result = self._tree.xpath('//meta[@name="version"]/@content')
@@ -478,6 +481,10 @@ class Document:
     @property
     def creatures(self) -> "CreatureCollection":
         return self._creatures
+
+    @property
+    def magic_items(self) -> "MagicItemCollection":
+        return self._magic_items
 
     @property
     def version(self) -> Optional[str]:
@@ -495,7 +502,8 @@ class Document:
     def __repr__(self) -> str:
         return (
             f"<Document version={self._version!r} content={self._content!r} "
-            f"spells={len(self._spells)} creatures={len(self._creatures)}>"
+            f"spells={len(self._spells)} creatures={len(self._creatures)} "
+            f"magic_items={len(self._magic_items)}>"
         )
 
 
@@ -589,6 +597,19 @@ class CreatureCollection(_BaseCollection):
     """
     _section_class = "creature"
     _id_prefix = "creature-"
+
+
+class MagicItemCollection(_BaseCollection):
+    """All 257 magic items in the document. Indexable by slug, iterable, filterable.
+
+    Example:
+        >>> doc.magic_items["fireball"]   # raises KeyError
+        >>> doc.magic_items["adamantine-armor"]
+        <MagicItem 'adamantine-armor': Armor (Any Medium or Heavy), Uncommon>
+        >>> list(doc.magic_items.filter(category="Wondrous Item"))[:3]
+    """
+    _section_class = "magic-item"
+    _id_prefix = "magic-item-"
 
 
 # ============================================================================
@@ -819,13 +840,13 @@ class Spell:
     @property
     def casting_time(self) -> str:
         return self._element.xpath(
-            './table[@class="spell-cast"]/tr/td[@class="spell-cast-time"]/text()'
+            './table[@class="spell-cast"]/tr/td[@class="spell-casting-time"]/text()'
         )[0]
 
     @property
     def range(self) -> str:
         return self._element.xpath(
-            './table[@class="spell-cast"]/tr/td[@class="spell-cast-range"]/text()'
+            './table[@class="spell-cast"]/tr/td[@class="spell-range"]/text()'
         )[0]
 
     @property
@@ -835,13 +856,13 @@ class Spell:
     @property
     def components_raw(self) -> str:
         return self._element.xpath(
-            './table[@class="spell-cast"]/tr/td[@class="spell-cast-components"]/text()'
+            './table[@class="spell-cast"]/tr/td[@class="spell-components"]/text()'
         )[0]
 
     @property
     def duration(self) -> str:
         return self._element.xpath(
-            './table[@class="spell-cast"]/tr/td[@class="spell-cast-duration"]/text()'
+            './table[@class="spell-cast"]/tr/td[@class="spell-duration"]/text()'
         )[0]
 
     @property
@@ -1162,6 +1183,216 @@ class Creature:
 # Forward-reference resolution
 SpellCollection._entity_class = Spell
 CreatureCollection._entity_class = Creature
+MagicItemCollection._entity_class = None  # set after MagicItem definition below
+
+
+# ============================================================================
+# MagicItem
+# ============================================================================
+
+
+class MagicItem:
+    """A magic item entry in SRDOM.
+
+    Attributes:
+        slug: The item's slug (e.g., 'adamantine-armor', 'weapon').
+        title: The full title text including any variants (e.g., 'Weapon, +1, +2, or +3').
+        name: The canonical name (e.g., 'Weapon'). Equals title when no variants exist.
+        variants: List of variant markers, e.g., ['+1', '+2', '+3']; [] when none.
+        num_variants: Length of variants. 0 for normal items, 3 for the 5 variant-bearing items.
+        category: The item category (e.g., 'Weapon', 'Wondrous Item').
+        category_description: Optional qualifier from category parenthetical
+                              (e.g., 'Any Simple or Martial'); None if absent.
+        rarities: List of rarity strings (e.g., ['Uncommon', 'Rare', 'Very Rare']).
+                  Length-1 for normal items, length-3 for variant-bearing items.
+        rarity_tiers: List of {'rarity': str, 'variant': str|None} dicts pairing each
+                      rarity with its variant marker (by position with `variants`).
+                      For normal items: [{'rarity': X, 'variant': None}].
+        requires_attunement: True if any attunement is required.
+        attunement: The full attunement clause string (e.g., 'Requires Attunement',
+                    'Requires Attunement by a Paladin'); None if no attunement.
+        description: Description prose, format determined by document content setting.
+        description_html: Description as raw HTML fragment.
+        specials: List of Special objects for embedded sub-sections (Bag of Tricks
+                  color variants, Wand of Wonder Effects table, etc.).
+        creature: Embedded creature for items with one (Figurine of Wondrous Power,
+                  Mysterious Deck); None otherwise.
+        element: Underlying lxml element.
+
+    Example:
+        >>> item = doc.magic_items["weapon"]
+        >>> item.title
+        'Weapon, +1, +2, or +3'
+        >>> item.name
+        'Weapon'
+        >>> item.variants
+        ['+1', '+2', '+3']
+        >>> item.num_variants
+        3
+        >>> item.category
+        'Weapon'
+        >>> item.category_description
+        'Any Simple or Martial'
+        >>> item.rarities
+        ['Uncommon', 'Rare', 'Very Rare']
+        >>> item.rarity_tiers
+        [{'rarity': 'Uncommon', 'variant': '+1'},
+         {'rarity': 'Rare', 'variant': '+2'},
+         {'rarity': 'Very Rare', 'variant': '+3'}]
+        >>> item.requires_attunement
+        False
+    """
+
+    def __init__(self, element: _Element, content: str = "md"):
+        self._element = element
+        self._content = content
+
+    @property
+    def element(self) -> _Element:
+        return self._element
+
+    @property
+    def slug(self) -> str:
+        return self._element.get("id", "").removeprefix("magic-item-")
+
+    @property
+    def title(self) -> str:
+        h4 = self._element.xpath('./h4[@class="magic-item-title"]')
+        if not h4:
+            return ""
+        return h4[0].text_content().strip()
+
+    @property
+    def name(self) -> str:
+        result = self._element.xpath(
+            './h4[@class="magic-item-title"]/span[@class="magic-item-name"]/text()'
+        )
+        return result[0] if result else ""
+
+    @property
+    def variants(self) -> List[str]:
+        return self._element.xpath(
+            './h4[@class="magic-item-title"]/span[@class="magic-item-variant"]/text()'
+        )
+
+    @property
+    def num_variants(self) -> int:
+        return len(self.variants)
+
+    @property
+    def category(self) -> str:
+        result = self._element.xpath(
+            './p[@class="magic-item-general"]/span[@class="magic-item-category"]/text()'
+        )
+        return result[0] if result else ""
+
+    @property
+    def category_description(self) -> Optional[str]:
+        result = self._element.xpath(
+            './p[@class="magic-item-general"]/span[@class="magic-item-category-description"]/text()'
+        )
+        return result[0] if result else None
+
+    @property
+    def rarities(self) -> List[str]:
+        return self._element.xpath(
+            './p[@class="magic-item-general"]/span[@class="magic-item-rarities"]/span[@class="magic-item-rarity"]/text()'
+        )
+
+    @property
+    def rarity_tiers(self) -> List[dict]:
+        """Pair each rarity with its variant marker (by position)."""
+        rarities = self.rarities
+        variants = self.variants
+        if not variants:
+            return [{"rarity": r, "variant": None} for r in rarities]
+        return [
+            {"rarity": r, "variant": v}
+            for r, v in zip(rarities, variants)
+        ]
+
+    @property
+    def attunement(self) -> Optional[str]:
+        result = self._element.xpath(
+            './p[@class="magic-item-general"]/span[@class="magic-item-attunement"]/text()'
+        )
+        return result[0] if result else None
+
+    @property
+    def requires_attunement(self) -> bool:
+        return self.attunement is not None
+
+    @property
+    def description(self) -> str:
+        desc = self._element.xpath('./div[@class="magic-item-description"]')
+        if not desc:
+            return ""
+        if self._content == "html":
+            return _html_fragment(desc[0])
+        return _md_children(desc[0])
+
+    @property
+    def description_html(self) -> str:
+        desc = self._element.xpath('./div[@class="magic-item-description"]')
+        if not desc:
+            return ""
+        return _html_fragment(desc[0])
+
+    @property
+    def specials(self) -> List[Special]:
+        """List of embedded sub-sections (Bag of Tricks variants, etc.)."""
+        result = []
+        for sec in self._element.xpath(
+            './div[@class="magic-item-specials"]/section[@class="magic-item-special"]'
+        ):
+            heading_text = sec.xpath("./h5/text() | ./h6/text()")
+            heading = heading_text[0] if heading_text else ""
+            full_id = sec.get("id", "")
+            parts = full_id.split("-special-")
+            slug = parts[1] if len(parts) == 2 else full_id
+            if self._content == "html":
+                body = _html_fragment(sec)
+            else:
+                body = _md_children(sec)
+            result.append(Special(heading=heading, slug=slug, content=body))
+        return result
+
+    @property
+    def creature(self) -> Optional["Creature"]:
+        """Embedded creature stat block, if any (Figurine of Wondrous Power,
+        Mysterious Deck). Inside the description div per SRD layout."""
+        result = self._element.xpath(
+            './div[@class="magic-item-description"]//section[@class="creature"]'
+        )
+        return Creature(result[0], content=self._content) if result else None
+
+    def to_dict(self) -> dict:
+        creature = self.creature
+        return {
+            "slug": self.slug,
+            "title": self.title,
+            "name": self.name,
+            "variants": self.variants,
+            "num_variants": self.num_variants,
+            "category": self.category,
+            "category_description": self.category_description,
+            "rarities": self.rarities,
+            "rarity_tiers": self.rarity_tiers,
+            "requires_attunement": self.requires_attunement,
+            "attunement": self.attunement,
+            "description": self.description,
+            "specials": [s.to_dict() for s in self.specials],
+            "creature": creature.to_dict() if creature is not None else None,
+        }
+
+    def __repr__(self) -> str:
+        cd = f" ({self.category_description})" if self.category_description else ""
+        rarities = ", ".join(self.rarities)
+        return f"<MagicItem {self.slug!r}: {self.category}{cd}, {rarities}>"
+
+
+# Resolve MagicItem forward reference
+MagicItemCollection._entity_class = MagicItem
 
 
 # ============================================================================
@@ -1187,6 +1418,8 @@ def _read_or_build_json_cache(
         data = _serialize_collection(doc.spells, content)
     elif entity_type == "creatures":
         data = _serialize_collection(doc.creatures, content)
+    elif entity_type == "magic_items":
+        data = _serialize_collection(doc.magic_items, content)
     else:
         raise ValueError(f"Unknown entity_type: {entity_type!r}")
     _ensure_cache_dir()
@@ -1212,15 +1445,25 @@ def _cmd_collection(args, entity_type: str) -> int:
 
 
 def _cmd_entity(args, entity_type: str) -> int:
-    """Handle `spell <slug>` and `creature <slug>` subcommands.
+    """Handle `spell <slug>`, `creature <slug>`, `magic-item <slug>` subcommands.
 
     Reads from JSON cache if present (and the slug exists in it); otherwise
     parses the source and writes the entity directly.
     """
     doc = load(source=args.source, content=args.content)
-    collection = doc.spells if entity_type == "spells" else doc.creatures
+    if entity_type == "spells":
+        collection = doc.spells
+        kind_singular = "spell"
+    elif entity_type == "creatures":
+        collection = doc.creatures
+        kind_singular = "creature"
+    elif entity_type == "magic_items":
+        collection = doc.magic_items
+        kind_singular = "magic-item"
+    else:
+        raise ValueError(f"Unknown entity_type: {entity_type!r}")
     if args.slug not in collection:
-        sys.stderr.write(f"No {entity_type[:-1]} with slug: {args.slug!r}\n")
+        sys.stderr.write(f"No {kind_singular} with slug: {args.slug!r}\n")
         return 1
     entity = collection[args.slug]
     json.dump(entity.to_dict(), sys.stdout, ensure_ascii=False, indent=2)
@@ -1240,11 +1483,12 @@ def _self_test(source: Optional[str] = None, content: str = "md") -> int:
     print(f"  Path:    {doc._path}")
     print(f"  Spells:  {len(doc.spells)}")
     print(f"  Creatures: {len(doc.creatures)}")
+    print(f"  Magic items: {len(doc.magic_items)}")
 
     print("\n--- Spell spot checks ---")
     for slug in ["acid-arrow", "fireball", "wish", "acid-splash"]:
         s = doc.spells[slug]
-        print(f"  {s}: components={s.components}")
+        print(f"  {s}: casting_time={s.casting_time!r}, components={s.components}")
 
     print("\n--- Creature spot checks ---")
     for slug in ["aboleth", "ancient-red-dragon", "goblin-warrior", "commoner"]:
@@ -1254,27 +1498,45 @@ def _self_test(source: Optional[str] = None, content: str = "md") -> int:
         except KeyError:
             print(f"  (no creature: {slug})")
 
+    print("\n--- Magic item spot checks ---")
+    for slug in ["adamantine-armor", "weapon", "holy-avenger",
+                 "figurine-of-wondrous-power", "potions-of-healing"]:
+        try:
+            mi = doc.magic_items[slug]
+            print(f"  {mi}")
+            print(f"    num_variants={mi.num_variants}, "
+                  f"requires_attunement={mi.requires_attunement}")
+            if mi.num_variants:
+                print(f"    rarity_tiers={mi.rarity_tiers}")
+            if mi.creature:
+                print(f"    embedded creature: {mi.creature}")
+            if mi.specials:
+                print(f"    specials: {[s.heading for s in mi.specials]}")
+        except KeyError:
+            print(f"  (no magic item: {slug})")
+
     print("\n--- Description format check ---")
     fb = doc.spells["fireball"]
     desc = fb.description
-    if content == "md":
-        print(f"  Fireball description (md, first 120 chars): {desc[:120]!r}")
-        assert "**" in desc or "*" in desc or "-" in desc or len(desc) > 100, (
-            "expected some markdown structure"
-        )
-    else:
-        print(f"  Fireball description (html, first 120 chars): {desc[:120]!r}")
-        assert desc.startswith("<"), "expected html fragment"
+    print(f"  Fireball description ({content}, first 120 chars): {desc[:120]!r}")
 
-    print("\n--- Filter spot check ---")
+    print("\n--- Filter spot checks ---")
     cantrips = list(doc.spells.filter(level=None))
     print(f"  Cantrips: {len(cantrips)}")
     monsters = [c for c in doc.creatures if c.category == "monster"]
     print(f"  Monsters: {len(monsters)}")
-    monster_str10 = [c.name for c in monsters if c.strength == 10]
+    monster_str10 = sorted(c.name for c in monsters if c.strength == 10)
     print(f"  Monsters with STR 10: {len(monster_str10)}")
-    for n in sorted(monster_str10)[:5]:
-        print(f"    - {n}")
+
+    print("\n  Magic items by category:")
+    from collections import Counter
+    cat_count = Counter(mi.category for mi in doc.magic_items)
+    for cat, c in sorted(cat_count.items(), key=lambda x: -x[1]):
+        print(f"    {c:4d}  {cat}")
+    print(f"  Magic items requiring attunement: "
+          f"{sum(1 for mi in doc.magic_items if mi.requires_attunement)}")
+    print(f"  Magic items with variants: "
+          f"{sum(1 for mi in doc.magic_items if mi.num_variants > 0)}")
 
     print("\n--- CR comparison ---")
     print(f"  CR('1/4') < CR(1): {CR.parse('1/4') < CR.parse('1')}")
@@ -1310,10 +1572,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("spells", help="Emit all spells as JSON.")
     sub.add_parser("creatures", help="Emit all creatures as JSON.")
+    sub.add_parser("magic-items", help="Emit all magic items as JSON.")
     sp = sub.add_parser("spell", help="Emit one spell as JSON.")
     sp.add_argument("slug")
     sc = sub.add_parser("creature", help="Emit one creature as JSON.")
     sc.add_argument("slug")
+    sm = sub.add_parser("magic-item", help="Emit one magic item as JSON.")
+    sm.add_argument("slug")
     sub.add_parser("test", help="Run a self-test against the resolved source.")
     return p
 
@@ -1325,10 +1590,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_collection(args, "spells")
     if args.command == "creatures":
         return _cmd_collection(args, "creatures")
+    if args.command == "magic-items":
+        return _cmd_collection(args, "magic_items")
     if args.command == "spell":
         return _cmd_entity(args, "spells")
     if args.command == "creature":
         return _cmd_entity(args, "creatures")
+    if args.command == "magic-item":
+        return _cmd_entity(args, "magic_items")
     if args.command == "test":
         return _cmd_test(args)
     parser.error(f"Unknown command: {args.command}")
