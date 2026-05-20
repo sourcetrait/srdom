@@ -7,7 +7,7 @@
 # Nushell after the JSON arrives; the Python script only parses SRDOM
 # and emits.
 #
-# Module version: 0.2.0-draft
+# Module version: 0.3.0
 #
 # NOTE FOR AI AGENTS:
 # This file is a thin wrapper. For programmatic use, prefer calling
@@ -60,7 +60,7 @@
 #     srdom.py magic-item X    ↔  srdom magic-item X    ↔  nu srdom.nu magic-item X
 #     srdom.py test            ↔  srdom test            ↔  nu srdom.nu test
 #
-# All accept the same --source and --content flags.
+# All accept the same --source flag.
 
 
 # Resolve the Python interpreter to use. Falls back to "python3".
@@ -74,18 +74,16 @@ def _script_path [] {
 }
 
 # Build the argument list for invoking srdom.py.
-# Global flags first (--source, --content), then the subcommand, then slug.
+# Global flags first (--source), then the subcommand, then slug.
 def _build_args [
     cmd: string
-    --content: string
     --source: string
     --slug: string
 ] {
     [
-        (if $source != null  { ["--source"  $source]  } else { [] })
-        (if $content != null { ["--content" $content] } else { [] })
+        (if $source != null { ["--source" $source] } else { [] })
         [$cmd]
-        (if $slug != null    { [$slug] } else { [] })
+        (if $slug != null   { [$slug] } else { [] })
     ] | flatten
 }
 
@@ -105,29 +103,21 @@ def _run [args: list<string>] {
 #     srdom spells | where "Wizard" in classes
 #     srdom spells | where school == "Evocation" | length
 export def "srdom spells" [
-    --content (-c): string   # "md" (default in srdom.py) or "html"
     --source (-s): string    # 'refresh', filepath, or URL
 ] {
-    _run (_build_args "spells" --content $content --source $source) | from json
+    _run (_build_args "spells" --source $source) | from json
 }
 
 # Emit all creatures as a Nushell table.
 #
-# Each row has a `category` field with one of these values:
-#   "monster"               — listed under "Monsters A-Z"
-#   "animal"                — listed under "Animals"
-#   "embedded-spell"        — stat block embedded inside a spell description
-#   "embedded-magic-item"   — stat block embedded inside a magic-item description
-#
 # Examples:
-#     srdom creatures | where category == "monster" and strength == 10 | get name
-#     srdom creatures | where cr_numeric >= 15 | select name cr
-#     srdom creatures | group-by type | transpose key value | each { |r| { type: $r.key, count: ($r.value | length) } }
+#     srdom creatures | where strength == 10 | get name
+#     srdom creatures | where challenge_rating == "10" | select name kind
+#     srdom creatures | group-by kind | transpose key value | each { |r| { kind: $r.key, count: ($r.value | length) } }
 export def "srdom creatures" [
-    --content (-c): string
     --source (-s): string
 ] {
-    _run (_build_args "creatures" --content $content --source $source) | from json
+    _run (_build_args "creatures" --source $source) | from json
 }
 
 # Emit one spell as a Nushell record.
@@ -137,10 +127,9 @@ export def "srdom creatures" [
 #     srdom spell fireball | get description
 export def "srdom spell" [
     slug: string             # the spell slug (e.g., "fireball", "magic-missile")
-    --content (-c): string
     --source (-s): string
 ] {
-    _run (_build_args "spell" --content $content --source $source --slug $slug) | from json
+    _run (_build_args "spell" --source $source --slug $slug) | from json
 }
 
 # Emit one creature as a Nushell record.
@@ -150,28 +139,27 @@ export def "srdom spell" [
 #     srdom creature aboleth | get actions | select name description
 export def "srdom creature" [
     slug: string             # the creature slug (e.g., "aboleth", "goblin-warrior")
-    --content (-c): string
     --source (-s): string
 ] {
-    _run (_build_args "creature" --content $content --source $source --slug $slug) | from json
+    _run (_build_args "creature" --source $source --slug $slug) | from json
 }
 
 # Emit all magic items as a Nushell table.
 #
 # Each row includes structural fields including `category`, `category_description`,
-# `rarities` (list), `rarity_tiers` (paired list), `requires_attunement` (bool),
-# `attunement` (full clause or null), `variants` (list), `num_variants` (int).
+# `rarities` (list), `rarity_tiers` (paired list), `attunement` (full clause or
+# null; check `($row.attunement | is-not-empty)` for attunement requirement),
+# `variants` (list).
 #
 # Examples:
 #     srdom magic-items | where category == "Wondrous Item"
-#     srdom magic-items | where requires_attunement == true | length
-#     srdom magic-items | where num_variants > 0 | get title
+#     srdom magic-items | where ($it.attunement | is-not-empty) | length
+#     srdom magic-items | where ($it.variants | length) > 0 | get title
 #     srdom magic-items | where ("Legendary" in rarities) | select name category
 export def "srdom magic-items" [
-    --content (-c): string
     --source (-s): string
 ] {
-    _run (_build_args "magic-items" --content $content --source $source) | from json
+    _run (_build_args "magic-items" --source $source) | from json
 }
 
 # Emit one magic item as a Nushell record.
@@ -182,10 +170,9 @@ export def "srdom magic-items" [
 #     srdom magic-item figurine-of-wondrous-power | get creature
 export def "srdom magic-item" [
     slug: string             # the magic item slug (e.g., "holy-avenger", "weapon")
-    --content (-c): string
     --source (-s): string
 ] {
-    _run (_build_args "magic-item" --content $content --source $source --slug $slug) | from json
+    _run (_build_args "magic-item" --source $source --slug $slug) | from json
 }
 
 # Run the Python library's self-test against the resolved source.
@@ -195,10 +182,9 @@ export def "srdom magic-item" [
 #     srdom test
 #     srdom test --source refresh
 export def "srdom test" [
-    --content (-c): string
     --source (-s): string
 ] {
-    _run (_build_args "test" --content $content --source $source)
+    _run (_build_args "test" --source $source)
 }
 
 
@@ -210,11 +196,10 @@ export def "srdom test" [
 def main [
     command?: string   # spells | creatures | magic-items | spell | creature | magic-item | test
     slug?: string      # required for `spell`, `creature`, `magic-item`
-    --content (-c): string
     --source (-s): string
 ] {
     if $command == null {
-        print "Usage: srdom.nu <command> [slug] [--content md|html] [--source <ref>]"
+        print "Usage: srdom.nu <command> [slug] [--source <ref>]"
         print ""
         print "Commands:"
         print "  spells               Emit all spells as JSON"
@@ -235,9 +220,9 @@ def main [
     }
 
     let args = if $command in ["spells" "creatures" "magic-items" "test"] {
-        _build_args $command --content $content --source $source
+        _build_args $command --source $source
     } else if $command in ["spell" "creature" "magic-item"] {
-        _build_args $command --content $content --source $source --slug $slug
+        _build_args $command --source $source --slug $slug
     } else {
         print -e $"Error: unknown command '($command)'"
         exit 1

@@ -1,0 +1,130 @@
+model creature {
+    slug: string(slug),
+    name: string,
+    size: string,
+    kind: string,
+    alignment: string,
+    armor_class: string,
+    initiative: string,
+    hit_points: string,
+    speed: string,
+    strength: u32,
+    strength_modifier: i32,
+    strength_save: i32,
+    dexterity: u32,
+    dexterity_modifier: i32,
+    dexterity_save: i32,
+    constitution: u32,
+    constitution_modifier: i32,
+    constitution_save: i32,
+    intelligence: u32,
+    intelligence_modifier: i32,
+    intelligence_save: i32,
+    wisdom: u32,
+    wisdom_modifier: i32,
+    wisdom_save: i32,
+    charisma: u32,
+    charisma_modifier: i32,
+    charisma_save: i32,
+    skills: string,
+    senses: string,
+    languages: string,
+    challenge_rating: string,
+    traits: vec<trait>,
+    actions: vec<action>,
+    bonus_actions: vec<action>,
+    reactions: vec<reaction>,
+    legendary_actions: vec<legendary_action>,
+}
+
+model trait {
+    slug: string(slug),
+    name: string,
+    description: string(md),
+    constraints: vec<string>,
+}
+
+model action {
+    slug: string(slug),
+    name: string,
+    usage: string(md),
+    constraints: vec<string>,
+}
+
+model legendary_action {
+    slug: string(slug),
+    name: string,
+    uses: u32,  // during situation::normal
+    situation_uses: map<situation, u32>,  // anything but situation::normal
+    usage: string(md),
+    constraints: vec<string>,
+}
+
+model reaction {
+    slug: string(slug),
+    name: string,
+    trigger: string,
+    response: string,
+    constraints: vec<string>,
+}
+
+enum situation {
+    normal,
+    in_lair,
+}
+
+model spell {
+    slug: string(slug),
+    name: string,
+    level: u32,
+    upgrade: option<string(md)>,
+    school: string,
+    classes: vec<string>,
+    casting_time: string,
+    range: string,
+    components: spell_components,
+    duration: string,
+    description: string(md),
+    effects: vec<spell_effect>,
+    special_rules: vec<special_rules>,
+    creature: option<creature>,
+}
+
+model spell_components {
+    verbal: bool,
+    somatic: bool,
+    material: option<string>,
+}
+
+model spell_effect {
+    slug: string(slug),
+    name: string,
+    description: string(md),
+    constraints: vec<string>,
+}
+
+model magic_item {
+    slug: string(slug),
+    title: string,
+    name: string,
+    variants: vec<string>,
+    category: string,
+    category_description: option<string>,
+    rarities: vec<string>,
+    rarity_tiers: vec<magic_item_rarity_tier>,
+    attunement: option<string>,
+    description: string(md),
+    special_rules: vec<special_rules>,
+    creature: option<creature>,
+}
+
+model magic_item_rarity_tier {
+    rarity: string,
+    variant: option<string>,
+}
+
+model special_rules {
+    slug: string(slug),
+    heading: string,
+    content: string(md),
+}

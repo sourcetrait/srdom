@@ -1,0 +1,17 @@
+node creature {
+    key {
+      field: slug,
+      prefix: 'creature-',
+    },
+    fields {
+        slug: key,
+        name: query relative {
+          selector: '.creature-name',
+          xpath: union [
+              './h3[@class="creature-name"]/text()',
+              './h5[@class="creature-name"]/text()',
+          ],
+        },
+        // continues ...
+    }
+}
