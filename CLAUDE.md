@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-*Revision 9 (2026-05-21)*
+*Revision 10 (2026-05-21)*
 
 A working-context reference for Claude (me) when picking up SRDOM project work
 in a fresh conversation. Roy commits this to the repo so it survives memory
@@ -657,6 +657,110 @@ placeholder values for fields awaiting HTML markup work
 `legendary_action.situation_uses` → `{}`). They PASS today because the
 placeholders are correct. When the markup lands, they'll FAIL — which
 is the signal to update them to assert the real extracted values.
+
+### Magic item variance markup (srdom.html v0.7.0+)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+The `magic_item` model captures variance in three states:
+
+| state | `rarity` | `variants` | example |
+|---|---|---|---|
+| singular | `some(R)` | `[]` | Holy Avenger |
+| canonical + deviations | `some(R)` | populated | Potion of Healing |
+| all variants | `none` | populated | Weapon |
+
+Per-variant rarity (`magic_item_variant.rarity`) is `option<rarity>`.
+The library extracts it from `<span class="magic-item-variant-rarity">`
+spans **only if the source specifies them**; otherwise it stays `none`.
+The library does **not** default missing variant rarities to the parent's
+rarity — defaulting is consumer policy.
+
+Markup pattern:
+- Variant names live in `<span class="magic-item-variant-name">` anywhere
+  in the section (h4, table cell, dt, or inside a `<span class="subject">`
+  within a `<p>`).
+- Variant rarities live in `<span class="magic-item-variant-rarity">` —
+  positional pairing with variant-name spans in document order.
+- The variant-name span wraps **only the differentiator**, not the
+  encasing punctuation. For "Potion of Healing (greater)", the span
+  wraps just `greater`; the parens are decorative text outside.
+- Parent rarity stays inside `<span class="magic-item-rarity">` in
+  `<p class="magic-item-general">` — drop the span (not the surrounding
+  text) when parent.rarity = none.
+
+### data-exceptional attribute (canonical-form deviations)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+Some magic items have source IDs/headings that diverge from their canonical
+singular form. These get `data-exceptional="<token>"` on the section.
+
+Current vocabulary: **`singularized`** — applied when the source uses a
+plural form (e.g., "Potions of Healing") but the canonical magic item is
+singular ("Potion of Healing").
+
+The `singularized` pattern:
+- Section id uses the canonical singular form (`magic-item-potion-of-healing`).
+- The h4 carries `<span class="magic-item-alias">` — preserves the source
+  display text (e.g., "Potions of Healing").
+- Sibling to the h4: `<template class="magic-item-name">` — carries the
+  canonical name ("Potion of Healing").
+- The library's `_XP_NAME` reads either span or template via
+  `.//*[@class="magic-item-name"]` — works uniformly across exceptional
+  and normal items.
+
+Multiple exceptional tokens space-separated; not yet exercised.
+
+### Special_rules use `dl/dt/dd` uniformly
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+Inside `<section class="magic-item-special">` (and `<section
+class="spell-special">`), rules use:
+
+```html
+<dl>
+  <dt>Heading</dt>
+  <dd>Body content (markdown, may include nested elements).</dd>
+  <dt>...</dt><dd>...</dd>
+</dl>
+```
+
+Single-rule and multi-rule cases share the same shape — `dl` always,
+even for a single dt/dd pair. No standalone `h5+body` markup. No DOM
+ids on the dl/dt/dd (anchor navigation not needed at this layer).
+
+Each dt/dd pair becomes one `query.SpecialRules` entry. The library
+iterates dt elements via `_XP_SPECIAL_DTS` and matches each to its
+following-sibling dd.
+
+### Dual-extraction: dt with variant-name span
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+When a `<dt>` contains a `<span class="magic-item-variant-name">`, the
+entry surfaces in **both** `variants` (positional name + paired rarity +
+dd as description) and `special_rules` (full dt heading + dd content).
+
+`special_rules.slug` derives from the variant-name span text when
+present, so the slug is joinable with `variant.slug` across the two
+lists. Without a variant-name span, the slug derives from the full dt
+text.
+
+### Slug-build rule
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+The library exposes two slug helpers:
+- `_slugify(text)`: lowercase, non-alphanumeric → `-`, collapse runs,
+  trim. `"+1"` → `"1"`; `"frost or stone"` → `"frost-or-stone"`.
+- `_slug_build(*parts)`: slugify each, join with `-`, collapse runs,
+  trim. Used for compound slugs when needed.
+
+`variant.slug` and `special_rules.slug` are always **local tails** — no
+DOM-id prefix. Compound slugs (for DOM-id construction) are caller's
+responsibility via `_slug_build`.
 
 
 ## 12. Common operations cheat sheet
