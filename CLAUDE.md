@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-*Revision 11 (2026-05-21)*
+*Revision 13 (2026-05-21)*
 
 A working-context reference for Claude (me) when picking up SRDOM project work
 in a fresh conversation. Roy commits this to the repo so it survives memory
@@ -159,8 +159,8 @@ section.
 ## 3. Repository and file layout
 
 - `/srdom.html` - the document. ~2.85 MB, ~50k lines.
-- `/srdom.py` - the Python library. Single file, ~62 KB in v0.4.0.
-- `/srdom.nu` - the Nushell wrapper. Single file, ~8 KB in v0.3.0.
+- `/srdom.py` - the Python library. Single file, ~99 KB in v0.6.0.
+- `/srdom.nu` - the Nushell wrapper. Single file, ~9 KB in v0.5.0.
 - `/_headers` - Cloudflare Pages content-type overrides.
 - `/CLAUDE.md` - this file.
 - `/DOM-Contract.md` - the format-spec contract (DOMMF + DOMQF grammar).
@@ -713,12 +713,19 @@ Markup pattern:
   `<p class="magic-item-general">` — drop the span (not the surrounding
   text) when parent.rarity = none.
 
-### data-exceptional attribute (canonical-form deviations)
+### data-exceptional attribute (deviation from field-default treatment)
 
 *Candidate for future for-ai-agents documentation; regenerative.*
 
-`data-exceptional` flags markup that deviates from a default rule and
-needs explicit handling. Vocabulary is space-separated tokens.
+`data-exceptional` flags markup that deviates from a field's *default
+treatment*. Its presence on an element tells the parser: "do not apply the
+default rule for this field; consult the paired data-* attribute (and/or
+the surrounding structural markup) for the override." Vocabulary is
+space-separated tokens.
+
+The unifying semantics: every field has a default extraction rule
+(e.g., name from h4, slug from heading text, attunement-as-prose-as-soft).
+`data-exceptional="<token>"` upgrades or replaces that rule.
 
 Current tokens:
 
@@ -748,6 +755,70 @@ Current tokens:
   (singular vs plural possessive — both strip to `giants-bane`). The
   umbrella reslugs to `giants-bane-rule`; the sub-rule reslugs
   redundantly to `giants-bane` to document the disambiguation pair.
+
+- **`logic`** — applied to a span whose visible text would otherwise be
+  treated as `fuzz::soft(prose)`. Carries a paired `data-logic="<expr>"`
+  attribute holding the structured form, encoded in the data-logic
+  mini-language (see below). The library parses `data-logic` into
+  `Hard(logic_tree)`; if the parse fails or the flag is absent, the field
+  falls to `Soft((span.text or "").strip())`.
+
+  Currently applied to all 139 `<span class="magic-item-attunement">`
+  spans (every one — uniform application). Bare "Requires Attunement"
+  explicitly carries `data-logic="is(any)"`; no implicit default rule.
+
+### data-* payload attributes (data-slug, data-logic)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+When `data-exceptional` flags a deviation, the structured override
+travels in a paired `data-*` attribute named for the value type:
+
+- **`data-slug="<slug>"`** — paired with `data-exceptional="reslug"`.
+  Holds a plain slug-case string.
+- **`data-logic="<expression>"`** — paired with `data-exceptional="logic"`.
+  Holds a logic-tree expression in the data-logic mini-language (see
+  next subsection).
+
+Future logic-typed fields (trait prerequisites, conditional activation
+gates, multi-class spell sources) follow the same pattern.
+
+### data-logic mini-language
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+A small text-encoded notation mirroring DOMMF `logic<T>` syntax, used in
+the `data-logic` attribute. The grammar (recursive descent, whitespace
+flexible):
+
+```
+logic       := is( requirement )
+             | in( [ requirement, ... ] )
+             | not_in( [ requirement, ... ] )
+             | not( logic )
+             | and( [ logic, ... ] )
+             | or( [ logic, ... ] )
+```
+
+For attunement, the leaf grammar is:
+
+```
+requirement := any
+             | class( srd_class )
+             | lineage( srd_lineage )
+             | capability( capability )
+             | attuned_to( slug )
+```
+
+All identifiers and slugs lex bare (no quotes) as `[a-z0-9_-]+`. Empty
+trailing commas not allowed. Parser is in `srdom.py` as
+`_parse_attunement_logic`; renderer (for round-trips) is
+`_render_attunement_logic`. JSON serializer is `_attunement_to_dict`
+(producing the tagged-dict tree `{"kind": "...", "value"/"values": ...}`).
+
+When extending the leaf grammar for a new field type, add a sibling
+parser/renderer/serializer triple — the logic-tree machinery stays
+shared.
 
 ### Special_rules use `dl/dt/dd` uniformly
 
@@ -867,31 +938,34 @@ Reserved keywords now include `union`, `fuzz`, `logic`, `is`, `in`,
 `map`, `option`, `none`, `some`, `string`, `bool`, `i32`, `u32`, `f32`,
 `slug`, `snake`, `md`, `hard`, `soft`.
 
-### Attunement modeling pattern (srdom.dommf v current)
+### Attunement modeling pattern (srdom.dommf v current, srdom.py v0.6.0+)
 
 *Candidate for future for-ai-agents documentation; regenerative.*
 
 `magic_item.attunement` is typed as
-`option<fuzz<logic<attunement_predicate>>>`. Each wrap layer earns its
+`option<fuzz<logic<attunement_requirement>>>`. Each wrap layer earns its
 keep:
 
 - **`option`** — does the item require attunement at all? `none` for
   no-attunement items, `some(...)` for required.
-- **`fuzz`** — `hard<logic<attunement_predicate>>` for SRD clauses we
-  can parse into structured predicates; `soft<string(md)>` for prose
-  escape (currently unused but reserved for future irregular clauses).
+- **`fuzz`** — `hard<logic<attunement_requirement>>` for clauses with
+  structured markup (`data-exceptional="logic"` + `data-logic="..."`);
+  `soft<string(md)>` fallback for spans missing the flag or with
+  unparseable `data-logic` (markup-incomplete / future-SRD signal).
 - **`logic`** — the boolean expression tree over predicates: `is(...)`,
   `in([...])`, `or([...])`, etc.
 
-`attunement_predicate` is a `union` covering: `any` ("Requires Attunement"
+`attunement_requirement` is a `union` covering: `any` ("Requires Attunement"
 with no qualifier), `class(srd_class)`, `lineage(srd_lineage)`,
 `capability(capability)`, `attuned_to(string(slug))` (self-referential —
 slug references another magic_item).
 
-The 12 unique SRD 5.2.1 attunement clauses all fit this shape. The
-worked encodings live in the past-conversation transcript; sanity-check
-any new attunement clause from a future SRD against the same pattern
-before extending the predicate union.
+The 12 unique SRD 5.2.1 attunement clauses all fit this shape and all 139
+attunement spans in srdom.html v0.8.0+ carry `data-exceptional="logic"`
++ `data-logic="..."`. The library (srdom.py v0.6.0+) parses each span's
+`data-logic` into `Hard(logic_tree)` via `_parse_attunement_logic`;
+parse failure → `Soft(visible_text)`. Tests `test_attunement_*` pin all
+12 mappings plus the soft-fallback paths.
 
 This same triple-wrap pattern (`option<fuzz<logic<P>>>`) is a candidate
 shape for any future field that needs the combination of (optionality ×
@@ -989,15 +1063,6 @@ remove them from here.
   situation_uses.** The model and query layer are ready (with TODO test
   placeholders); the HTML markup itself hasn't been added. Currently
   the lib returns `""`, `0`, `{}` placeholders for these fields.
-- **Attunement parsing in srdom.py.** `magic_item.attunement` is now
-  modeled as `option<fuzz<logic<attunement_predicate>>>` (see §11), but
-  the lib still surfaces the raw clause string. Need to write a parser
-  that turns "Requires Attunement by a Bard, Cleric, or Druid" into
-  `some(hard(in([class(bard), class(cleric), class(druid)])))`, with
-  `soft(...)` fallback for any clause the parser can't recognize.
-  Currently only 12 unique clauses exist in the corpus; the parser
-  should cover those exhaustively and fall through to soft for
-  unknowns. Tests should pin all 12 mappings.
 - **Cell-merge defects in the damage glossary table.** Originally
   flagged during a survey; turned out to be a false positive from the
   survey script (text_content concatenation across cells). No fix
@@ -1077,6 +1142,11 @@ When I edit this file in a session, I leave it in
 and let him commit. The file goes to the orphan `ai` branch in the
 repo (not the main tree, not `draft/roylaurie`, not `www`). It does
 not auto-deploy or get included in the published site; it is repo-only.
+
+When presenting CLAUDE.md to Roy in chat, do not recap the edits — this
+file is for me, by me, and the diffs serve no one else. Just report the
+new revision number alongside the file. Roy reviews the file directly
+if he wants to.
 
 
 ---
