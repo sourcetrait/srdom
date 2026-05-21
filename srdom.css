@@ -135,3 +135,16 @@ pre {
     border: 1px dashed gray;
     padding: 10px;
 }
+
+span.topic {
+    color: #ffb86c;
+    font-weight: bold;
+    font-style: italic;
+}
+
+span.subject {
+    color: #ffb86c;
+    font-weight: bold;
+    font-style: italic;
+    margin-right: 1em;
+}
