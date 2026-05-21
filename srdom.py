@@ -1,5 +1,5 @@
 """
-srdom — query SRDOM (D&D SRD 5.2.1 as structured HTML).
+srdom — query SRDOM (SRD 5.2.1 as structured HTML, 5E compatible).
 
 Library and CLI for parsing and querying the SRDOM document. Organized in
 four conceptual namespaces:
@@ -38,7 +38,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple, Union
+from typing import Any, Iterator, List, Optional, Tuple, Union
 
 try:
     from lxml import etree as _letree
@@ -48,7 +48,7 @@ except ImportError as e:
     raise ImportError("srdom requires lxml") from e
 
 
-__version__ = "0.4.0"
+__version__ = "0.7.2"
 DEFAULT_URL = "https://srdom.sourcetrait.pub/srdom.html"
 TTL_SECONDS = 24 * 60 * 60
 _USER_AGENT = f"srdom-py/{__version__}"
@@ -138,47 +138,106 @@ def _is_cache_fresh(path: Path) -> bool:
     return age <= TTL_SECONDS
 
 
+_JSON_CACHE_ENTITIES = ("spells", "creatures", "magic_items")
+
+
+def _invalidate_json_caches(version: str) -> None:
+    """Delete any JSON cache files for the given version (so stale derivations
+    don't outlive a fresh HTML mirror)."""
+    for entity in _JSON_CACHE_ENTITIES:
+        p = _json_cache_path(version, entity)
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+def _mirror_to_cache(data: bytes, version: str) -> Path:
+    """Write HTML bytes to the canonical cache slot, update the VERSION marker,
+    and invalidate any matching JSON caches. Returns the cache file path."""
+    _ensure_cache_dir()
+    cache_path = _html_cache_path(version)
+    cache_path.write_bytes(data)
+    _write_cache_version(version)
+    _invalidate_json_caches(version)
+    return cache_path
+
+
+def _discover_local_srdom() -> Optional[Path]:
+    """Look for an srdom.html file colocated with the user's work:
+    1. current working directory
+    2. directory containing this script
+    Returns the first existing path, or None."""
+    candidates: List[Path] = [Path.cwd() / "srdom.html"]
+    try:
+        candidates.append(Path(__file__).resolve().parent / "srdom.html")
+    except NameError:
+        pass
+    seen = set()
+    for p in candidates:
+        rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        if rp.is_file():
+            return rp
+    return None
+
+
 def _resolve_source(source: Optional[str]) -> Tuple[Path, str]:
     """Resolve the source argument to a (file_path, version) tuple.
 
-    Source semantics:
-    - None / "" → use cache; fetch from DEFAULT_URL if absent or stale
-    - "refresh" → force fetch from DEFAULT_URL
-    - URL string → fetch from the given URL (and cache it)
-    - filepath → use the given local file (not cached)
+    Resolution order:
+    1. Explicit --source <X>: file, URL, or "refresh"
+    2. Auto-discovered ./srdom.html (cwd)
+    3. Auto-discovered <script-dir>/srdom.html
+    4. Fresh cache
+    5. Fetch from DEFAULT_URL
+
+    Any path that produces HTML bytes outside the cache (steps 1-3, 5) mirrors
+    those bytes into the cache and invalidates matching JSON caches. The cache
+    always reflects the last source we resolved against.
     """
-    # Explicit local path
-    if source and not _is_url(source) and source != "refresh":
+    # Step 1: explicit
+    if source == "refresh":
+        return _fetch_and_cache(DEFAULT_URL)
+    if source and _is_url(source):
+        return _fetch_and_cache(source)
+    if source:  # explicit local filepath
         p = Path(source)
         if not p.exists():
             raise FileNotFoundError(f"No such file: {source}")
         data = p.read_bytes()
         version = _extract_version(data)
-        return (p, version)
+        cache_path = _mirror_to_cache(data, version)
+        return (cache_path, version)
 
-    # Explicit URL or refresh
-    if source == "refresh":
-        return _fetch_and_cache(DEFAULT_URL)
-    if source and _is_url(source):
-        return _fetch_and_cache(source)
+    # Steps 2-3: auto-discovery
+    local = _discover_local_srdom()
+    if local is not None:
+        data = local.read_bytes()
+        version = _extract_version(data)
+        cache_path = _mirror_to_cache(data, version)
+        return (cache_path, version)
 
-    # Default: use cache if fresh, else fetch
+    # Step 4: cache fallback
     cached_version = _read_cache_version()
     if cached_version:
         cache_path = _html_cache_path(cached_version)
         if _is_cache_fresh(cache_path):
             return (cache_path, cached_version)
+
+    # Step 5: URL fetch
     return _fetch_and_cache(DEFAULT_URL)
 
 
 def _fetch_and_cache(url: str) -> Tuple[Path, str]:
-    """Fetch a URL, cache it as srdom_v<version>.html, update VERSION."""
+    """Fetch a URL, mirror its bytes into the cache, update VERSION,
+    and invalidate matching JSON caches."""
     data = _fetch_url(url)
     version = _extract_version(data)
-    _ensure_cache_dir()
-    cache_path = _html_cache_path(version)
-    cache_path.write_bytes(data)
-    _write_cache_version(version)
+    cache_path = _mirror_to_cache(data, version)
     return (cache_path, version)
 # ============================================================================
 # HTML → Markdown conversion
@@ -271,6 +330,59 @@ def _md_children(element: _Element) -> str:
         if rendered:
             parts.append(rendered)
     return "\n\n".join(parts).strip()
+
+
+def _md_content(element: _Element) -> str:
+    """Render an element's full content as Markdown — including the element's
+    leading .text (before the first child) and all block children. Use for
+    elements like <dd> that may carry text-only content or mixed text+children."""
+    parts = []
+    if element.text and element.text.strip():
+        parts.append(element.text.strip())
+    for child in element:
+        rendered = _md_block(child)
+        if rendered:
+            parts.append(rendered)
+    return "\n\n".join(parts).strip()
+
+
+def _slugify(text: str) -> str:
+    """Convert text to a strict-minimal slug: apostrophes stripped (both straight
+    and curly), lowercase, non-alphanumeric → '-', collapse runs of '-', trim
+    leading/trailing '-'. Apostrophes are stripped (not replaced) so possessive
+    forms like 'Giant's' slug to 'giants', not 'giant-s'."""
+    s = (text or "").replace("'", "").replace("\u2019", "")
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", s.lower())
+    s = re.sub(r"-{2,}", "-", s)
+    return s.strip("-")
+
+
+def _slug_build(*parts: str) -> str:
+    """Build a compound slug from parts: slugify each, join with '-',
+    collapse runs of '-', trim."""
+    pieces = [_slugify(p) for p in parts if p]
+    joined = "-".join(pieces)
+    return re.sub(r"-{2,}", "-", joined).strip("-")
+
+
+_RARITY_STR_MAP = {
+    "common": "common",
+    "uncommon": "uncommon",
+    "rare": "rare",
+    "very rare": "very_rare",
+    "very_rare": "very_rare",
+    "legendary": "legendary",
+    "artifact": "artifact",
+}
+
+
+def _normalize_rarity(text: Optional[str]) -> Optional[str]:
+    """Normalize HTML rarity text (e.g. 'Very Rare') to enum value ('very_rare').
+    Returns None for unrecognized strings (including 'Rarity Varies')."""
+    if not text:
+        return None
+    key = text.strip().lower()
+    return _RARITY_STR_MAP.get(key)
 
 
 
@@ -431,25 +543,197 @@ class model:
         special_rules: list = field(default_factory=list)
         creature: Optional["model.Creature"] = None
 
+    class Rarity(str, Enum):
+        """SRD 5.2.1 magic item rarity tiers in canonical order."""
+        COMMON = "common"
+        UNCOMMON = "uncommon"
+        RARE = "rare"
+        VERY_RARE = "very_rare"
+        LEGENDARY = "legendary"
+        ARTIFACT = "artifact"
+
+    # ----- DOMMF: union attunement_requirement -----
+    # Each variant is a frozen dataclass for value semantics (==, hashable);
+    # collectively they form the AttunementRequirement sum type.
+
+    @dataclass(frozen=True)
+    class AttunementAny:
+        """attunement_requirement::any -- bare 'Requires Attunement' (no qualifier)."""
+
+    class SrdClass(str, Enum):
+        """SRD 5.2.1 player classes (hardcoded enum, per srdom.dommf)."""
+        BARBARIAN = "barbarian"
+        BARD = "bard"
+        CLERIC = "cleric"
+        DRUID = "druid"
+        FIGHTER = "fighter"
+        MONK = "monk"
+        PALADIN = "paladin"
+        RANGER = "ranger"
+        ROGUE = "rogue"
+        SORCERER = "sorcerer"
+        WARLOCK = "warlock"
+        WIZARD = "wizard"
+
+    class SrdLineage(str, Enum):
+        """SRD 5.2.1 lineages with attunement-gated items (hardcoded, currently dwarf only)."""
+        DWARF = "dwarf"
+
+    class Capability(str, Enum):
+        """Cross-class capability tags for attunement (hardcoded, currently spellcaster only)."""
+        SPELLCASTER = "spellcaster"
+
+    @dataclass(frozen=True)
+    class AttunementClass:
+        value: "model.SrdClass"
+
+    @dataclass(frozen=True)
+    class AttunementLineage:
+        value: "model.SrdLineage"
+
+    @dataclass(frozen=True)
+    class AttunementCapability:
+        value: "model.Capability"
+
+    @dataclass(frozen=True)
+    class AttunementAttunedTo:
+        """attunement_requirement::attuned_to(string(slug)) -- slug refs another magic_item."""
+        slug: str
+
+    # AttunementRequirement = Union[AttunementAny, AttunementClass, AttunementLineage,
+    #                               AttunementCapability, AttunementAttunedTo]
+
+    # ----- DOMMF: logic<T> combinators -----
+    # Generic over leaf T; for attunement, leaf is AttunementRequirement.
+    # `values` is a tuple (not list) so the dataclass stays hashable.
+
+    @dataclass(frozen=True)
+    class Is:
+        """logic<T>::is(T) -- a single leaf value."""
+        value: Any
+
+    @dataclass(frozen=True)
+    class In:
+        """logic<T>::in(vec<T>) -- set membership; sugar for or(is(T)...). Empty=false."""
+        values: tuple = ()
+
+    @dataclass(frozen=True)
+    class NotIn:
+        """logic<T>::not_in(vec<T>) -- set non-membership. Empty=true."""
+        values: tuple = ()
+
+    @dataclass(frozen=True)
+    class Not:
+        """logic<T>::not(logic<T>)."""
+        value: Any
+
+    @dataclass(frozen=True)
+    class And:
+        """logic<T>::and(vec<logic<T>>) -- conjunction. Empty=true."""
+        values: tuple = ()
+
+    @dataclass(frozen=True)
+    class Or:
+        """logic<T>::or(vec<logic<T>>) -- disjunction. Empty=false."""
+        values: tuple = ()
+
+    # Logic[T] = Union[Is, In, NotIn, Not, And, Or]
+
+    # ----- DOMMF: fuzz<T> -----
+
+    @dataclass(frozen=True)
+    class Hard:
+        """fuzz<T>::hard(T) -- structured per the inner type."""
+        value: Any
+
+    @dataclass(frozen=True)
+    class Soft:
+        """fuzz<T>::soft(string(md)) -- prose escape hatch."""
+        value: str
+
+    # Fuzz[T] = Union[Hard, Soft]
+
+    # ----- DOMMF: dice notation -----
+
+    class Die(str, Enum):
+        """SRD dice sizes used in roll expressions."""
+        D3 = "d3"
+        D4 = "d4"
+        D6 = "d6"
+        D8 = "d8"
+        D10 = "d10"
+        D12 = "d12"
+        D20 = "d20"
+        D100 = "d100"
+
+    class Op(str, Enum):
+        """Operators used in roll_modifier."""
+        ADD = "add"
+        SUBTRACT = "subtract"
+        MULTIPLY = "multiply"
+        DIVIDE = "divide"
+
+    @dataclass(frozen=True)
+    class RollModifier:
+        op: "model.Op"
+        value: int  # u32 per DOMMF; value is the literal that follows the op
+
+    @dataclass(frozen=True)
+    class Roll:
+        """Roll : (n d die) [op value]. Encodes 'XdN', 'XdN + Y', 'XdN - Y', 'XdN x Y'."""
+        n: int  # u32
+        d: "model.Die"
+        modifier: Optional["model.RollModifier"] = None
+
+    # ----- DOMMF: unum / inum variant dataclasses -----
+    #
+    # Both unions share the same structural variants: Fixed (a literal integer)
+    # and Rolled (a dice expression). Python can't type-system-distinguish unum
+    # from inum at the variant level, so we collapse to a single Fixed/Rolled
+    # pair. The unum semantics (clamp underflow to 0, floor fractional) and
+    # inum semantics (floor fractional) apply at evaluation time, which is a
+    # consumer concern; the data layer just carries the structured value.
+
+    @dataclass(frozen=True)
+    class Fixed:
+        """unum/inum::fixed(int) -- a literal integer."""
+        value: int
+
+    @dataclass(frozen=True)
+    class Rolled:
+        """unum/inum::rolled(roll) -- a dice-roll expression."""
+        value: "model.Roll"
+
+    # Unum = Union[Fixed, Rolled]  -- clamp underflow to 0, floor fractional
+    # Inum = Union[Fixed, Rolled]  -- floor fractional (no underflow rule)
+
     @dataclass
-    class MagicItemRarityTier:
-        rarity: str
-        variant: Optional[str] = None
+    class MagicItemVariant:
+        slug: str
+        name: str
+        rarity: "Optional[model.Rarity]" = None
+        description: Optional[str] = None
+        # charges: option<unum>
+        charges: Optional[Union["model.Fixed", "model.Rolled"]] = None
 
     @dataclass
     class MagicItem:
         slug: str
-        title: str
         name: str
-        variants: List[str]
         category: str
-        rarities: List[str]
-        rarity_tiers: list
         description: str
         category_description: Optional[str] = None
-        attunement: Optional[str] = None
+        rarity: "Optional[model.Rarity]" = None
+        variants: list = field(default_factory=list)
+        # attunement: option<fuzz<logic<attunement_requirement>>>
+        # None     = no attunement required
+        # Hard(L)  = structured logic tree over AttunementRequirement variants
+        # Soft(s)  = prose escape (markup-incomplete or unrecognized clause)
+        attunement: Optional[Union["model.Hard", "model.Soft"]] = None
         special_rules: list = field(default_factory=list)
         creature: Optional["model.Creature"] = None
+        # charges: option<unum>
+        charges: Optional[Union["model.Fixed", "model.Rolled"]] = None
 
 
 
@@ -927,28 +1211,39 @@ class query:
 
 
     class SpecialRules:
-        """An embedded rules subsection (Bag of Tricks color variants, Wand of Wonder
-        Effects table, Control Weather Precipitation table, etc.)."""
+        """A special-rule entry — dt heading + dd body. Same model whether
+        the dl lives inside a magic-item-special section or a spell-special section.
+        slug derives from the variant-name span if present (for joinability with
+        the variants list), otherwise from slugify(dt text). heading is the full
+        dt text; content is md of dd."""
 
-        _XP_HEADING = _letree.XPath('./h5/text() | ./h6/text()')
+        _XP_VARIANT_NAME = _letree.XPath('.//*[@class="magic-item-variant-name"]/text()')
 
-        def __init__(self, element: _Element):
-            self._element = element
+        def __init__(self, dt: _Element, dd: _Element):
+            self._dt = dt
+            self._dd = dd
 
         @property
         def slug(self) -> str:
-            full_id = self._element.get("id", "")
-            parts = full_id.split("-special-")
-            return parts[1] if len(parts) == 2 else full_id
+            # Manual override: data-exceptional="reslug" + data-slug="..."
+            exceptional = self._dt.get("data-exceptional") or ""
+            if "reslug" in exceptional.split():
+                manual = self._dt.get("data-slug")
+                if manual:
+                    return manual
+            # Prefer variant-name span text for joinability with variants
+            r = self._XP_VARIANT_NAME(self._dt)
+            if r:
+                return _slugify(r[0])
+            return _slugify(self.heading)
 
         @property
         def heading(self) -> str:
-            r = self._XP_HEADING(self._element)
-            return r[0] if r else ""
+            return (self._dt.text_content() or "").strip()
 
         @property
         def content(self) -> str:
-            return _md_children(self._element)
+            return _md_content(self._dd)
 
         def to_model(self) -> "model.SpecialRules":
             return model.SpecialRules(
@@ -959,7 +1254,7 @@ class query:
             return {
                 "slug": self.slug,
                 "heading": self.heading,
-                "content": _md_children(self._element),
+                "content": self.content,
             }
 
 
@@ -995,8 +1290,8 @@ class query:
         _XP_EFFECTS_DL = _letree.XPath('./dl[@class="spell-effects"]')
         _XP_EFFECTS_DTS = _letree.XPath('./dt')
         _XP_EFFECTS_DDS = _letree.XPath('./dd')
-        _XP_SPECIALS = _letree.XPath(
-            './div[@class="spell-specials"]/section[@class="spell-special"]'
+        _XP_SPECIAL_DTS = _letree.XPath(
+            './div[@class="spell-specials"]/section[@class="spell-special"]/dl/dt'
         )
         _XP_EMBEDDED_CREATURE = _letree.XPath('./section[@class="creature"]')
 
@@ -1074,7 +1369,13 @@ class query:
 
         @property
         def special_rules(self) -> "List[query.SpecialRules]":
-            return [query.SpecialRules(sec) for sec in self._XP_SPECIALS(self._element)]
+            dts = self._XP_SPECIAL_DTS(self._element)
+            pairs = []
+            for dt in dts:
+                dd = dt.getnext()
+                if dd is not None and dd.tag == "dd":
+                    pairs.append(query.SpecialRules(dt, dd))
+            return pairs
 
         @property
         def creature(self) -> "Optional[query.Creature]":
@@ -1127,32 +1428,31 @@ class query:
     class MagicItem:
         """A magic item entry in SRDOM."""
 
-        _XP_TITLE = _letree.XPath('./h4[@class="magic-item-title"]')
-        _XP_NAME = _letree.XPath(
-            './h4[@class="magic-item-title"]/span[@class="magic-item-name"]/text()'
-        )
-        _XP_VARIANTS = _letree.XPath(
-            './h4[@class="magic-item-title"]/span[@class="magic-item-variant"]/text()'
-        )
+        _XP_NAME = _letree.XPath('.//*[@class="magic-item-name"]/text()')
         _XP_CATEGORY = _letree.XPath(
             './p[@class="magic-item-general"]/span[@class="magic-item-category"]/text()'
         )
         _XP_CATEGORY_DESC = _letree.XPath(
             './p[@class="magic-item-general"]/span[@class="magic-item-category-description"]/text()'
         )
-        _XP_RARITIES = _letree.XPath(
-            './p[@class="magic-item-general"]/span[@class="magic-item-rarities"]'
-            '/span[@class="magic-item-rarity"]/text()'
+        _XP_RARITY = _letree.XPath(
+            './p[@class="magic-item-general"]/span[@class="magic-item-rarity"]/text()'
         )
-        _XP_ATTUNEMENT = _letree.XPath(
-            './p[@class="magic-item-general"]/span[@class="magic-item-attunement"]/text()'
+        _XP_ATTUNEMENT_SPAN = _letree.XPath(
+            './p[@class="magic-item-general"]/span[@class="magic-item-attunement"]'
         )
         _XP_DESCRIPTION = _letree.XPath('./div[@class="magic-item-description"]')
-        _XP_SPECIALS = _letree.XPath(
-            './div[@class="magic-item-specials"]/section[@class="magic-item-special"]'
+        _XP_SPECIAL_DTS = _letree.XPath(
+            './div[@class="magic-item-specials"]/section[@class="magic-item-special"]/dl/dt'
         )
+        _XP_VARIANT_NAME_SPANS = _letree.XPath('.//*[@class="magic-item-variant-name"]')
+        _XP_VARIANT_RARITY_SPANS = _letree.XPath('.//*[@class="magic-item-variant-rarity"]/text()')
         _XP_EMBEDDED_CREATURE = _letree.XPath(
-            './div[@class="magic-item-description"]//section[@class="creature"]'
+            './div[@class="magic-item-description"]//section[@class="creature"] | '
+            './div[@class="magic-item-specials"]//section[@class="creature"]'
+        )
+        _XP_ALL_CHARGES_SPANS = _letree.XPath(
+            './/span[@class="magic-item-charges"]'
         )
 
         def __init__(self, element: _Element):
@@ -1163,18 +1463,9 @@ class query:
             return self._element.get("id", "").removeprefix("magic-item-")
 
         @property
-        def title(self) -> str:
-            h4 = self._XP_TITLE(self._element)
-            return h4[0].text_content().strip() if h4 else ""
-
-        @property
         def name(self) -> str:
             r = self._XP_NAME(self._element)
-            return r[0] if r else ""
-
-        @property
-        def variants(self) -> List[str]:
-            return list(self._XP_VARIANTS(self._element))
+            return r[0].strip() if r else ""
 
         @property
         def category(self) -> str:
@@ -1187,21 +1478,149 @@ class query:
             return r[0] if r else None
 
         @property
-        def rarities(self) -> List[str]:
-            return list(self._XP_RARITIES(self._element))
+        def rarity(self) -> Optional[str]:
+            r = self._XP_RARITY(self._element)
+            return _normalize_rarity(r[0]) if r else None
 
         @property
-        def rarity_tiers(self) -> List[dict]:
-            rarities = self.rarities
-            variants = self.variants
-            if not variants:
-                return [{"rarity": r, "variant": None} for r in rarities]
-            return [{"rarity": r, "variant": v} for r, v in zip(rarities, variants)]
+        def attunement(self):
+            """Return Optional[Union[model.Hard, model.Soft]] per option<fuzz<logic<attunement_requirement>>>.
+
+            None  -- no attunement span present (item does not require attunement).
+            Hard  -- span carries data-exceptional="logic" and a parseable data-logic.
+            Soft  -- span lacks the data-exceptional="logic" flag, or data-logic
+                     fails to parse. Holds the visible prose for consumer fallback.
+            """
+            spans = self._XP_ATTUNEMENT_SPAN(self._element)
+            if not spans:
+                return None
+            span = spans[0]
+            text = (span.text or "").strip()
+            data_exc = (span.get("data-exceptional") or "").split()
+            if "logic" in data_exc:
+                try:
+                    logic = _parse_attunement_logic(span.get("data-logic", ""))
+                    return model.Hard(logic)
+                except _AttunementParseError:
+                    return model.Soft(text)
+            return model.Soft(text)
 
         @property
-        def attunement(self) -> Optional[str]:
-            r = self._XP_ATTUNEMENT(self._element)
-            return r[0] if r else None
+        def charges(self):
+            """Return Optional[Union[model.Fixed, model.Rolled]] per option<unum>.
+
+            None    -- no parent-level <span class="magic-item-charges">.
+            Fixed   -- integer literal in the span (e.g. '7' -> Fixed(7)).
+            Rolled  -- dice expression (e.g. '1d8 + 1' -> Rolled(Roll(...))).
+
+            Searches the entire section but filters out variant-level spans
+            (those whose containing block also holds a magic-item-variant-name).
+            Examples:
+              wand-of-magic-missiles: span in description div -> parent
+              nine-lives-stealer:     span in a non-variant special_rule dd -> parent
+              figurine-of-wondrous-power: span in a dd whose preceding dt
+                                          has a variant-name -> variant, not parent
+            """
+            for span in self._XP_ALL_CHARGES_SPANS(self._element):
+                if not _charges_span_is_variant_level(span):
+                    return _parse_charges(span.text or "")
+            return None
+
+        @property
+        def variants(self) -> List[dict]:
+            """Extract variants from magic-item-variant-name spans throughout the section.
+            Pairs positionally with magic-item-variant-rarity spans in document order.
+            description is populated based on the span's enclosing context:
+              - inside <td>: none (table data)
+              - inside <h4>: none
+              - inside <dt>: matching <dd>'s markdown
+              - inside <span class="subject"> within <p>: prose after the subject span
+            charges is extracted from any <span class="magic-item-charges"> inside
+            the variant's containing block (dd / p / td / h4). None when absent.
+            """
+            name_spans = self._XP_VARIANT_NAME_SPANS(self._element)
+            rarity_texts = list(self._XP_VARIANT_RARITY_SPANS(self._element))
+            variants = []
+            for i, span in enumerate(name_spans):
+                vname = (span.text_content() or "").strip()
+                vslug = _slugify(vname)
+                vrarity = _normalize_rarity(rarity_texts[i]) if i < len(rarity_texts) else None
+                vdescription = self._extract_variant_description(span)
+                vcharges = self._extract_variant_charges(span)
+                variants.append({
+                    "slug": vslug,
+                    "name": vname,
+                    "rarity": vrarity,
+                    "description": vdescription,
+                    "charges": vcharges,
+                })
+            return variants
+
+        @staticmethod
+        def _extract_variant_charges(span: _Element):
+            """Find a <span class="magic-item-charges"> inside the variant's
+            containing block (the dd matching a dt-variant, or the p containing
+            a subject-variant). Returns Fixed/Rolled or None.
+            """
+            block = span
+            while block is not None:
+                if block.tag == "dt":
+                    dd = block.getnext()
+                    if dd is not None and dd.tag == "dd":
+                        charges_spans = dd.xpath('.//span[@class="magic-item-charges"]/text()')
+                        if charges_spans:
+                            return _parse_charges(charges_spans[0])
+                    return None
+                if block.tag in ("td", "h4"):
+                    return None
+                if block.tag == "p":
+                    # For subject-paragraph variants, look in the post-subject
+                    # tail and following siblings of the subject span for a
+                    # charges span.
+                    charges_spans = block.xpath('.//span[@class="magic-item-charges"]/text()')
+                    if charges_spans:
+                        return _parse_charges(charges_spans[0])
+                    return None
+                block = block.getparent()
+            return None
+
+        @staticmethod
+        def _extract_variant_description(span: _Element) -> Optional[str]:
+            """Find the variant's description based on span's enclosing context."""
+            # Walk up to find the containing block element
+            block = span
+            while block is not None:
+                if block.tag in ("td", "h4"):
+                    return None
+                if block.tag == "dt":
+                    # Description is the matching following-sibling dd
+                    dd = block.getnext()
+                    if dd is not None and dd.tag == "dd":
+                        return _md_content(dd) or None
+                    return None
+                if block.tag == "p":
+                    # If the span is inside a span class="subject" within a p,
+                    # description is the prose after the subject span
+                    # Otherwise, no description
+                    subject = span.getparent() if span.getparent() is not None else None
+                    # Subject may be the span's direct parent (or higher)
+                    cur = span.getparent()
+                    while cur is not None and cur is not block:
+                        if cur.tag == "span" and cur.get("class") == "subject":
+                            subject = cur
+                            break
+                        cur = cur.getparent()
+                    if subject is not None and subject.tag == "span" and subject.get("class") == "subject":
+                        # Take the p's text content after the subject span
+                        post_text = (subject.tail or "")
+                        for sib in subject.itersiblings():
+                            post_text += _md_block(sib) or sib.text_content() or ""
+                            if sib.tail:
+                                post_text += sib.tail
+                        return post_text.strip() or None
+                    return None
+                block = block.getparent()
+            return None
 
         @property
         def description(self) -> str:
@@ -1210,7 +1629,15 @@ class query:
 
         @property
         def special_rules(self) -> "List[query.SpecialRules]":
-            return [query.SpecialRules(sec) for sec in self._XP_SPECIALS(self._element)]
+            """Iterate dt/dd pairs inside <section class="magic-item-special">/<dl>.
+            Each dt's following-sibling dd forms a SpecialRules pair."""
+            dts = self._XP_SPECIAL_DTS(self._element)
+            pairs = []
+            for dt in dts:
+                dd = dt.getnext()
+                if dd is not None and dd.tag == "dd":
+                    pairs.append(query.SpecialRules(dt, dd))
+            return pairs
 
         @property
         def creature(self) -> "Optional[query.Creature]":
@@ -1219,41 +1646,54 @@ class query:
 
         def to_model(self) -> "model.MagicItem":
             embedded = self.creature
-            tiers = [
-                model.MagicItemRarityTier(rarity=t["rarity"], variant=t["variant"])
-                for t in self.rarity_tiers
-            ]
+            rarity_val = self.rarity
             return model.MagicItem(
-                slug=self.slug, title=self.title, name=self.name,
-                variants=self.variants, category=self.category,
+                slug=self.slug,
+                name=self.name,
+                category=self.category,
                 category_description=self.category_description,
-                rarities=self.rarities, rarity_tiers=tiers,
-                attunement=self.attunement, description=self.description,
+                rarity=model.Rarity(rarity_val) if rarity_val else None,
+                variants=[
+                    model.MagicItemVariant(
+                        slug=v["slug"], name=v["name"],
+                        rarity=model.Rarity(v["rarity"]) if v["rarity"] else None,
+                        description=v["description"],
+                        charges=v["charges"],
+                    )
+                    for v in self.variants
+                ],
+                attunement=self.attunement,
+                description=self.description,
                 special_rules=[s.to_model() for s in self.special_rules],
                 creature=embedded.to_model() if embedded else None,
+                charges=self.charges,
             )
 
         def to_dict(self) -> dict:
             embedded = self.creature
             return {
                 "slug": self.slug,
-                "title": self.title,
                 "name": self.name,
-                "variants": self.variants,
                 "category": self.category,
                 "category_description": self.category_description,
-                "rarities": self.rarities,
-                "rarity_tiers": self.rarity_tiers,
-                "attunement": self.attunement,
+                "rarity": self.rarity,
+                "variants": [
+                    {**v, "charges": _charges_to_dict(v["charges"])}
+                    for v in self.variants
+                ],
+                "attunement": _attunement_to_dict(self.attunement),
                 "description": self.description,
                 "special_rules": [s.to_dict() for s in self.special_rules],
                 "creature": embedded.to_dict() if embedded else None,
+                "charges": _charges_to_dict(self.charges),
             }
 
         def __repr__(self) -> str:
             cd = f" ({self.category_description})" if self.category_description else ""
-            rarities = ", ".join(self.rarities)
-            return f"<query.MagicItem {self.slug!r}: {self.category}{cd}, {rarities}>"
+            rarity = self.rarity or "—"
+            n_variants = len(self.variants)
+            v_note = f", {n_variants} variant(s)" if n_variants else ""
+            return f"<query.MagicItem {self.slug!r}: {self.category}{cd}, {rarity}{v_note}>"
 
 
 def _parse_spell_components(raw: str) -> "model.SpellComponents":
@@ -1265,6 +1705,425 @@ def _parse_spell_components(raw: str) -> "model.SpellComponents":
         m = re.search(r"Material\s*\(([^)]+)\)", raw)
         material = m.group(1) if m else ""
     return model.SpellComponents(verbal=verbal, somatic=somatic, material=material)
+
+
+# ============================================================================
+# Attunement: data-logic mini-language parser / renderer / dict serializer
+# ============================================================================
+#
+# The data-logic attribute on <span class="magic-item-attunement"> (paired with
+# data-exceptional="logic") encodes a logic<attunement_requirement> tree as a
+# string in DOMMF-mirroring notation. Examples:
+#
+#     is(any)
+#     is(class(wizard))
+#     is(capability(spellcaster))
+#     in([class(bard), class(cleric), class(druid)])
+#     in([lineage(dwarf), attuned_to(belt-of-dwarvenkind)])
+#
+# Grammar:
+#
+#     logic       := is( requirement )
+#                  | in( [ requirement, ... ] )
+#                  | not_in( [ requirement, ... ] )
+#                  | not( logic )
+#                  | and( [ logic, ... ] )
+#                  | or( [ logic, ... ] )
+#     requirement := any
+#                  | class( srd_class )
+#                  | lineage( srd_lineage )
+#                  | capability( capability )
+#                  | attuned_to( slug )
+#
+# Whitespace flexible. Identifiers and slugs lex as [a-z0-9_-]+ (slugs include
+# hyphens; the bare-identifier form is unambiguous given the surrounding
+# punctuation).
+#
+# Parse failures raise _AttunementParseError; the query layer catches and falls
+# back to Soft(visible_text).
+
+
+class _AttunementParseError(ValueError):
+    """Raised when data-logic cannot be parsed."""
+
+
+_ATT_TOKEN_RE = re.compile(r'[a-z0-9_-]+|[(){}\[\],]')
+
+
+def _tokenize_attunement(s: str) -> List[str]:
+    """Split a data-logic string into tokens. Whitespace is the separator."""
+    tokens: List[str] = []
+    pos = 0
+    n = len(s)
+    while pos < n:
+        c = s[pos]
+        if c.isspace():
+            pos += 1
+            continue
+        m = _ATT_TOKEN_RE.match(s, pos)
+        if not m:
+            raise _AttunementParseError(
+                f"unexpected character at position {pos}: {c!r}"
+            )
+        tokens.append(m.group(0))
+        pos = m.end()
+    return tokens
+
+
+# Lookup sets for enum identifier validation
+_ATT_CLASS_NAMES = {c.value for c in model.SrdClass}
+_ATT_LINEAGE_NAMES = {l.value for l in model.SrdLineage}
+_ATT_CAPABILITY_NAMES = {c.value for c in model.Capability}
+
+
+def _parse_attunement_logic(s: str):
+    """Parse a data-logic string into a logic<attunement_requirement> tree.
+
+    Returns a model.Is/In/NotIn/Not/And/Or holding model.Attunement* leaves.
+    Raises _AttunementParseError on any malformed input.
+    """
+    tokens = _tokenize_attunement(s)
+    if not tokens:
+        raise _AttunementParseError("empty data-logic")
+    idx = [0]
+
+    def peek():
+        return tokens[idx[0]] if idx[0] < len(tokens) else None
+
+    def consume(expected=None):
+        t = peek()
+        if t is None:
+            raise _AttunementParseError(
+                f"unexpected end of input (expected {expected!r})"
+                if expected is not None
+                else "unexpected end of input"
+            )
+        if expected is not None and t != expected:
+            raise _AttunementParseError(f"expected {expected!r}, got {t!r}")
+        idx[0] += 1
+        return t
+
+    def parse_vec_of(parser):
+        """Parse '[ item, item, ... ]' using `parser` for each item.
+        Trailing comma is not allowed."""
+        consume("[")
+        items = []
+        if peek() != "]":
+            items.append(parser())
+            while peek() == ",":
+                consume(",")
+                items.append(parser())
+        consume("]")
+        return tuple(items)
+
+    def parse_requirement():
+        ctor = consume()
+        if ctor == "any":
+            return model.AttunementAny()
+        if ctor == "class":
+            consume("(")
+            name = consume()
+            consume(")")
+            if name not in _ATT_CLASS_NAMES:
+                raise _AttunementParseError(f"unknown srd_class: {name!r}")
+            return model.AttunementClass(model.SrdClass(name))
+        if ctor == "lineage":
+            consume("(")
+            name = consume()
+            consume(")")
+            if name not in _ATT_LINEAGE_NAMES:
+                raise _AttunementParseError(f"unknown srd_lineage: {name!r}")
+            return model.AttunementLineage(model.SrdLineage(name))
+        if ctor == "capability":
+            consume("(")
+            name = consume()
+            consume(")")
+            if name not in _ATT_CAPABILITY_NAMES:
+                raise _AttunementParseError(f"unknown capability: {name!r}")
+            return model.AttunementCapability(model.Capability(name))
+        if ctor == "attuned_to":
+            consume("(")
+            slug = consume()
+            consume(")")
+            return model.AttunementAttunedTo(slug)
+        raise _AttunementParseError(f"unknown requirement constructor: {ctor!r}")
+
+    def parse_logic():
+        op = consume()
+        if op == "is":
+            consume("(")
+            r = parse_requirement()
+            consume(")")
+            return model.Is(r)
+        if op == "in":
+            consume("(")
+            vals = parse_vec_of(parse_requirement)
+            consume(")")
+            return model.In(vals)
+        if op == "not_in":
+            consume("(")
+            vals = parse_vec_of(parse_requirement)
+            consume(")")
+            return model.NotIn(vals)
+        if op == "not":
+            consume("(")
+            inner = parse_logic()
+            consume(")")
+            return model.Not(inner)
+        if op == "and":
+            consume("(")
+            vals = parse_vec_of(parse_logic)
+            consume(")")
+            return model.And(vals)
+        if op == "or":
+            consume("(")
+            vals = parse_vec_of(parse_logic)
+            consume(")")
+            return model.Or(vals)
+        raise _AttunementParseError(f"unknown logic operator: {op!r}")
+
+    result = parse_logic()
+    if idx[0] != len(tokens):
+        raise _AttunementParseError(f"trailing tokens: {tokens[idx[0]:]}")
+    return result
+
+
+def _render_attunement_requirement(req) -> str:
+    if isinstance(req, model.AttunementAny):
+        return "any"
+    if isinstance(req, model.AttunementClass):
+        return f"class({req.value.value})"
+    if isinstance(req, model.AttunementLineage):
+        return f"lineage({req.value.value})"
+    if isinstance(req, model.AttunementCapability):
+        return f"capability({req.value.value})"
+    if isinstance(req, model.AttunementAttunedTo):
+        return f"attuned_to({req.slug})"
+    raise ValueError(f"not an attunement_requirement: {req!r}")
+
+
+def _render_attunement_logic(logic) -> str:
+    """Render a logic<attunement_requirement> tree back to data-logic string form."""
+    if isinstance(logic, model.Is):
+        return f"is({_render_attunement_requirement(logic.value)})"
+    if isinstance(logic, model.In):
+        items = ", ".join(_render_attunement_requirement(r) for r in logic.values)
+        return f"in([{items}])"
+    if isinstance(logic, model.NotIn):
+        items = ", ".join(_render_attunement_requirement(r) for r in logic.values)
+        return f"not_in([{items}])"
+    if isinstance(logic, model.Not):
+        return f"not({_render_attunement_logic(logic.value)})"
+    if isinstance(logic, model.And):
+        items = ", ".join(_render_attunement_logic(l) for l in logic.values)
+        return f"and([{items}])"
+    if isinstance(logic, model.Or):
+        items = ", ".join(_render_attunement_logic(l) for l in logic.values)
+        return f"or([{items}])"
+    raise ValueError(f"not a logic value: {logic!r}")
+
+
+def _attunement_requirement_to_dict(req) -> dict:
+    if isinstance(req, model.AttunementAny):
+        return {"kind": "any"}
+    if isinstance(req, model.AttunementClass):
+        return {"kind": "class", "value": req.value.value}
+    if isinstance(req, model.AttunementLineage):
+        return {"kind": "lineage", "value": req.value.value}
+    if isinstance(req, model.AttunementCapability):
+        return {"kind": "capability", "value": req.value.value}
+    if isinstance(req, model.AttunementAttunedTo):
+        return {"kind": "attuned_to", "value": req.slug}
+    raise ValueError(f"not an attunement_requirement: {req!r}")
+
+
+def _logic_to_dict(logic) -> dict:
+    if isinstance(logic, model.Is):
+        return {"kind": "is", "value": _attunement_requirement_to_dict(logic.value)}
+    if isinstance(logic, model.In):
+        return {"kind": "in", "values": [_attunement_requirement_to_dict(r) for r in logic.values]}
+    if isinstance(logic, model.NotIn):
+        return {"kind": "not_in", "values": [_attunement_requirement_to_dict(r) for r in logic.values]}
+    if isinstance(logic, model.Not):
+        return {"kind": "not", "value": _logic_to_dict(logic.value)}
+    if isinstance(logic, model.And):
+        return {"kind": "and", "values": [_logic_to_dict(l) for l in logic.values]}
+    if isinstance(logic, model.Or):
+        return {"kind": "or", "values": [_logic_to_dict(l) for l in logic.values]}
+    raise ValueError(f"not a logic value: {logic!r}")
+
+
+def _attunement_to_dict(attunement) -> Optional[dict]:
+    """Serialize Optional[Fuzz[Logic[AttunementRequirement]]] to JSON-safe dict."""
+    if attunement is None:
+        return None
+    if isinstance(attunement, model.Hard):
+        return {"kind": "hard", "value": _logic_to_dict(attunement.value)}
+    if isinstance(attunement, model.Soft):
+        return {"kind": "soft", "value": attunement.value}
+    raise ValueError(f"not a fuzz value: {attunement!r}")
+
+
+# ============================================================================
+# Roll / Charges: parser / renderer / dict serializer
+# ============================================================================
+#
+# The <span class="magic-item-charges"> content is the canonical machine-readable
+# form: a literal integer ('7', '50') or a dice expression ('1d3', '1d8 + 1',
+# '1d10 x 10'). No data-* payload attribute is needed because the source token
+# IS the structured form; the dispatcher checks for 'd' to choose Fixed vs Rolled.
+#
+# Roll grammar (matches every shape in SRD 5.2.1):
+#
+#     roll        := dice [ ws op ws integer ]
+#     dice        := integer 'd' integer
+#     op          := '+' | '-' | 'x'
+#
+# Only one modifier per expression; no chained dice (no '1d6 + 1d8'); no parens.
+# Op character is ASCII 'x' (Unicode '×' was normalized to ASCII in earlier passes).
+#
+# Note on coercion: this layer produces the structured form only. The unum/inum
+# semantic rules (clamp underflow to 0; floor fractional results) apply at
+# evaluation time -- a consumer concern. The data extracted here is purely
+# structural; evaluating a Rolled to a concrete integer is the caller's job.
+
+
+class _RollParseError(ValueError):
+    """Raised when a roll expression cannot be parsed."""
+
+
+# Strict roll grammar — leading int, 'd', int, optional ' op N'
+_ROLL_RE = re.compile(
+    r'^\s*(\d+)d(\d+)(?:\s*([+\-x])\s*(\d+))?\s*$'
+)
+
+_DIE_SIZES = {3, 4, 6, 8, 10, 12, 20, 100}
+_OP_CHAR_TO_ENUM = {
+    "+": "add",
+    "-": "subtract",
+    "x": "multiply",
+    # No source token for divide; reserved in the enum per spec choice.
+}
+
+
+def _parse_roll(s: str) -> "model.Roll":
+    """Parse a roll expression string into a model.Roll.
+
+    Examples:
+        "1d6"        -> Roll(1, Die.D6, None)
+        "2d6 + 3"    -> Roll(2, Die.D6, RollModifier(Op.ADD, 3))
+        "1d10 x 10"  -> Roll(1, Die.D10, RollModifier(Op.MULTIPLY, 10))
+
+    Raises _RollParseError on any malformed input or unknown die size.
+    """
+    m = _ROLL_RE.match(s)
+    if not m:
+        raise _RollParseError(f"not a roll expression: {s!r}")
+    n_str, d_str, op_char, val_str = m.group(1), m.group(2), m.group(3), m.group(4)
+    n = int(n_str)
+    d_size = int(d_str)
+    if d_size not in _DIE_SIZES:
+        raise _RollParseError(
+            f"unknown die size d{d_size} (allowed: {sorted(_DIE_SIZES)})"
+        )
+    die = model.Die(f"d{d_size}")
+    modifier = None
+    if op_char is not None:
+        op_name = _OP_CHAR_TO_ENUM.get(op_char)
+        if op_name is None:
+            raise _RollParseError(f"unknown op char: {op_char!r}")
+        modifier = model.RollModifier(op=model.Op(op_name), value=int(val_str))
+    return model.Roll(n=n, d=die, modifier=modifier)
+
+
+def _parse_charges(s: str) -> Union["model.Fixed", "model.Rolled"]:
+    """Dispatch a charges-span text to Fixed(int) or Rolled(Roll).
+
+    Presence of 'd' in the token selects Rolled; otherwise Fixed. Raises
+    _RollParseError if the Rolled path fails to parse, ValueError if the
+    Fixed path encounters a non-integer.
+    """
+    s = s.strip()
+    if "d" in s:
+        return model.Rolled(_parse_roll(s))
+    return model.Fixed(int(s))
+
+
+_OP_ENUM_TO_CHAR = {v: k for k, v in _OP_CHAR_TO_ENUM.items()}
+
+
+def _render_roll(r: "model.Roll") -> str:
+    """Render a Roll back to source-form string. Round-trips with _parse_roll."""
+    die_size = r.d.value[1:]  # strip 'd' prefix
+    base = f"{r.n}d{die_size}"
+    if r.modifier is None:
+        return base
+    op_char = _OP_ENUM_TO_CHAR.get(r.modifier.op.value)
+    if op_char is None:
+        raise ValueError(f"no render symbol for op {r.modifier.op}")
+    return f"{base} {op_char} {r.modifier.value}"
+
+
+def _render_charges(c) -> str:
+    """Render a Fixed/Rolled back to source-form string."""
+    if isinstance(c, model.Fixed):
+        return str(c.value)
+    if isinstance(c, model.Rolled):
+        return _render_roll(c.value)
+    raise ValueError(f"not a charges value: {c!r}")
+
+
+def _roll_to_dict(r: "model.Roll") -> dict:
+    """Tagged-record JSON shape for a Roll."""
+    mod = None
+    if r.modifier is not None:
+        mod = {"op": r.modifier.op.value, "value": r.modifier.value}
+    return {"n": r.n, "d": r.d.value, "modifier": mod}
+
+
+def _charges_to_dict(c) -> Optional[dict]:
+    """Serialize Optional[Union[Fixed, Rolled]] to JSON-safe tagged dict."""
+    if c is None:
+        return None
+    if isinstance(c, model.Fixed):
+        return {"kind": "fixed", "value": c.value}
+    if isinstance(c, model.Rolled):
+        return {"kind": "rolled", "value": _roll_to_dict(c.value)}
+    raise ValueError(f"not a charges value: {c!r}")
+
+
+def _charges_span_is_variant_level(span: _Element) -> bool:
+    """Return True if a magic-item-charges span belongs to a variant rather than
+    the parent magic_item. A span is variant-level if ANY of its enclosing
+    block-level ancestors (dd/p/td/h4) shares scope with a
+    magic-item-variant-name span:
+
+      - dd: the preceding dt holds a variant-name span
+      - p:  the p contains a variant-name span (subject-paragraph variants)
+      - td: the td contains a variant-name span (table-row variants)
+      - h4: the h4 contains a variant-name span (heading variants -- rare)
+
+    Walks up through nested blocks so deeply-nested cases (e.g., figurine
+    Ivory Goats variant whose '24 charges' span sits in a nested dt/dd inside
+    the variant's outer dd) are correctly classified as variant-level.
+    """
+    cur = span.getparent()
+    while cur is not None:
+        tag = getattr(cur, 'tag', None)
+        if tag == "section":
+            # Reached the magic-item section; no variant-containment above this
+            break
+        if tag == "dd":
+            dt = cur.getprevious()
+            if dt is not None and getattr(dt, 'tag', None) == "dt":
+                if dt.xpath('.//span[@class="magic-item-variant-name"]'):
+                    return True
+            # Otherwise keep walking up; an outer dd might be variant-scoped
+        elif tag in ("p", "td", "h4"):
+            if cur.xpath('.//span[@class="magic-item-variant-name"]'):
+                return True
+        cur = cur.getparent()
+    return False
 
 
 
@@ -1450,7 +2309,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="srdom",
         description=(
-            "Query SRDOM (D&D SRD 5.2.1 as structured HTML). "
+            "Query SRDOM (SRD 5.2.1 as structured HTML, 5E compatible). "
             "Emits JSON to stdout for pipeline use."
         ),
     )
@@ -1697,15 +2556,89 @@ class tests:
         m = doc.magic_items["holy-avenger"]
         assert m.name == "Holy Avenger"
         assert m.category == "Weapon"
-        assert "Legendary" in m.rarities
-        assert m.attunement is not None
+        assert m.rarity == "legendary"
+        # Holy Avenger requires Paladin attunement
+        assert m.attunement == model.Hard(model.Is(model.AttunementClass(model.SrdClass.PALADIN)))
 
     @staticmethod
     def test_weapon_has_variants(doc):
         m = doc.magic_items["weapon"]
-        assert m.variants == ["+1", "+2", "+3"]
-        assert len(m.rarity_tiers) == 3
-        assert m.rarity_tiers[0]["variant"] == "+1"
+        assert m.rarity is None, f"expected parent.rarity=None for all-variants weapon, got {m.rarity!r}"
+        assert len(m.variants) == 3
+        slugs = [v["slug"] for v in m.variants]
+        assert slugs == ["1", "2", "3"], f"expected slugs ['1','2','3'], got {slugs}"
+        names = [v["name"] for v in m.variants]
+        assert names == ["+1", "+2", "+3"], f"got names {names}"
+        rarities = [v["rarity"] for v in m.variants]
+        assert rarities == ["uncommon", "rare", "very_rare"], f"got rarities {rarities}"
+
+    @staticmethod
+    def test_potion_of_healing_singularized(doc):
+        m = doc.magic_items["potion-of-healing"]
+        assert m.name == "Potion of Healing", f"expected canonical name, got {m.name!r}"
+        assert m.rarity == "common", f"expected parent.rarity=common, got {m.rarity!r}"
+        assert len(m.variants) == 3, f"expected 3 deviation variants, got {len(m.variants)}"
+        names = [v["name"] for v in m.variants]
+        assert names == ["greater", "superior", "supreme"], f"got names {names}"
+
+    @staticmethod
+    def test_belt_of_giant_strength_variants(doc):
+        m = doc.magic_items["belt-of-giant-strength"]
+        assert m.rarity is None
+        assert len(m.variants) == 5, f"expected 5 variants, got {len(m.variants)}"
+        names = [v["name"] for v in m.variants]
+        assert "hill" in names and "frost or stone" in names and "storm" in names
+
+    @staticmethod
+    def test_ioun_stone_variants_have_descriptions(doc):
+        m = doc.magic_items["ioun-stone"]
+        assert m.rarity is None
+        assert len(m.variants) == 14, f"expected 14 ioun stones, got {len(m.variants)}"
+        # All variants should have non-empty descriptions
+        empty = [v["name"] for v in m.variants if not v["description"]]
+        assert not empty, f"variants with empty descriptions: {empty}"
+
+    @staticmethod
+    def test_spell_scroll_variants(doc):
+        m = doc.magic_items["spell-scroll"]
+        assert m.rarity is None
+        assert len(m.variants) == 10, f"expected 10 spell scrolls (Cantrip + 1-9), got {len(m.variants)}"
+        names = [v["name"] for v in m.variants]
+        assert names[0] == "Cantrip" and names[1] == "1" and names[-1] == "9"
+        # Copying rule promoted to special_rules
+        assert len(m.special_rules) == 1
+        assert "Copying" in m.special_rules[0].heading
+
+    @staticmethod
+    def test_figurine_of_wondrous_power(doc):
+        m = doc.magic_items["figurine-of-wondrous-power"]
+        assert m.rarity is None
+        # 9 outer variants (Bronze Griffon ... Silver Raven)
+        # Plus 3 nested goats inside Ivory Goats — total span count is 12
+        outer_names = ["Bronze Griffon", "Ebony Fly", "Golden Lions", "Ivory Goats",
+                       "Marble Elephant", "Obsidian Steed", "Onyx Dog",
+                       "Serpentine Owl", "Silver Raven"]
+        actual_names = [v["name"] for v in m.variants]
+        for n in outer_names:
+            assert n in actual_names, f"missing variant {n!r}"
+        # 9 special_rules from the dl/dt/dd
+        assert len(m.special_rules) == 9, f"expected 9 special_rules, got {len(m.special_rules)}"
+        # Giant Fly embedded inside Ebony Fly's dd
+        assert m.creature is not None
+        assert m.creature.name == "Giant Fly"
+
+    @staticmethod
+    def test_bag_of_tricks_variants(doc):
+        m = doc.magic_items["bag-of-tricks"]
+        assert m.rarity == "uncommon", f"expected uncommon, got {m.rarity!r}"
+        assert len(m.variants) == 3
+        names = [v["name"] for v in m.variants]
+        assert names == ["Gray", "Rust", "Tan"]
+        # Per-variant rarity is None (not repeated in source)
+        rarities = [v["rarity"] for v in m.variants]
+        assert all(r is None for r in rarities), f"expected all None, got {rarities}"
+        # 3 special_rules
+        assert len(m.special_rules) == 3
 
     @staticmethod
     def test_figurine_has_embedded_creature(doc):
@@ -1720,6 +2653,522 @@ class tests:
         mm = m.to_model()
         assert isinstance(mm, model.MagicItem)
         assert mm.category == "Armor"
+
+    @staticmethod
+    def test_rarity_normalization(doc):
+        assert _normalize_rarity("Common") == "common"
+        assert _normalize_rarity("Very Rare") == "very_rare"
+        assert _normalize_rarity("Legendary") == "legendary"
+        assert _normalize_rarity("Rarity Varies") is None
+        assert _normalize_rarity(None) is None
+        assert _normalize_rarity("") is None
+
+    @staticmethod
+    def test_slugify_basics(doc):
+        assert _slugify("Holy Avenger") == "holy-avenger"
+        assert _slugify("Potion of Healing") == "potion-of-healing"
+        assert _slugify("+1") == "1"
+        assert _slugify("frost or stone") == "frost-or-stone"
+        assert _slugify("Goat of Travail") == "goat-of-travail"
+        # Apostrophes are stripped, not replaced
+        assert _slugify("Giant's Bane") == "giants-bane"
+        assert _slugify("Giants' Bane") == "giants-bane"
+        # Curly apostrophe
+        assert _slugify("Giant\u2019s Bane") == "giants-bane"
+
+    @staticmethod
+    def test_hammer_of_thunderbolts_reslug(doc):
+        m = doc.magic_items["hammer-of-thunderbolts"]
+        slugs = {sr.heading: sr.slug for sr in m.special_rules}
+        # Umbrella heading reslugged to disambiguate from the sub-rule
+        assert slugs["Giant's Bane"] == "giants-bane-rule"
+        # Sub-rule keeps the natural (post-apostrophe-strip) slug, made explicit via reslug
+        assert slugs["Giants' Bane"] == "giants-bane"
+        assert slugs["Might of Giants"] == "might-of-giants"
+
+    @staticmethod
+    def test_slug_build_collapses_dashes(doc):
+        assert _slug_build("Weapon", "+1") == "weapon-1"
+        assert _slug_build("Potion of Healing", "greater") == "potion-of-healing-greater"
+        # Empty parts get dropped
+        assert _slug_build("foo", "", "bar") == "foo-bar"
+
+    # ---- Attunement: 12 mapping tests pinning each unique SRD 5.2.1 clause ----
+
+    @staticmethod
+    def test_attunement_any(doc):
+        """Bare 'Requires Attunement' (×118) → Hard(Is(AttunementAny))."""
+        m = doc.magic_items["belt-of-dwarvenkind"]
+        assert m.attunement == model.Hard(model.Is(model.AttunementAny()))
+
+    @staticmethod
+    def test_attunement_spellcaster(doc):
+        """'…by a Spellcaster' (×7) → capability(spellcaster)."""
+        m = doc.magic_items["pearl-of-power"]
+        assert m.attunement == model.Hard(
+            model.Is(model.AttunementCapability(model.Capability.SPELLCASTER))
+        )
+
+    @staticmethod
+    def test_attunement_class_wizard(doc):
+        m = doc.magic_items["hat-of-many-spells"]
+        assert m.attunement == model.Hard(
+            model.Is(model.AttunementClass(model.SrdClass.WIZARD))
+        )
+
+    @staticmethod
+    def test_attunement_class_paladin(doc):
+        m = doc.magic_items["holy-avenger"]
+        assert m.attunement == model.Hard(
+            model.Is(model.AttunementClass(model.SrdClass.PALADIN))
+        )
+
+    @staticmethod
+    def test_attunement_class_druid(doc):
+        m = doc.magic_items["staff-of-the-woodlands"]
+        assert m.attunement == model.Hard(
+            model.Is(model.AttunementClass(model.SrdClass.DRUID))
+        )
+
+    @staticmethod
+    def test_attunement_cleric_or_paladin(doc):
+        m = doc.magic_items["talisman-of-pure-good"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementClass(model.SrdClass.CLERIC),
+            model.AttunementClass(model.SrdClass.PALADIN),
+        )))
+
+    @staticmethod
+    def test_attunement_bard_cleric_druid(doc):
+        m = doc.magic_items["staff-of-healing"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementClass(model.SrdClass.BARD),
+            model.AttunementClass(model.SrdClass.CLERIC),
+            model.AttunementClass(model.SrdClass.DRUID),
+        )))
+
+    @staticmethod
+    def test_attunement_cleric_druid_paladin(doc):
+        m = doc.magic_items["necklace-of-prayer-beads"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementClass(model.SrdClass.CLERIC),
+            model.AttunementClass(model.SrdClass.DRUID),
+            model.AttunementClass(model.SrdClass.PALADIN),
+        )))
+
+    @staticmethod
+    def test_attunement_sorcerer_warlock_wizard(doc):
+        m = doc.magic_items["robe-of-the-archmagi"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementClass(model.SrdClass.SORCERER),
+            model.AttunementClass(model.SrdClass.WARLOCK),
+            model.AttunementClass(model.SrdClass.WIZARD),
+        )))
+
+    @staticmethod
+    def test_attunement_druid_sorcerer_warlock_wizard(doc):
+        m = doc.magic_items["staff-of-fire"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementClass(model.SrdClass.DRUID),
+            model.AttunementClass(model.SrdClass.SORCERER),
+            model.AttunementClass(model.SrdClass.WARLOCK),
+            model.AttunementClass(model.SrdClass.WIZARD),
+        )))
+
+    @staticmethod
+    def test_attunement_six_classes(doc):
+        m = doc.magic_items["staff-of-charming"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementClass(model.SrdClass.BARD),
+            model.AttunementClass(model.SrdClass.CLERIC),
+            model.AttunementClass(model.SrdClass.DRUID),
+            model.AttunementClass(model.SrdClass.SORCERER),
+            model.AttunementClass(model.SrdClass.WARLOCK),
+            model.AttunementClass(model.SrdClass.WIZARD),
+        )))
+
+    @staticmethod
+    def test_attunement_dwarf_or_attuned_to_belt(doc):
+        """The single heterogeneous clause: dwarf lineage OR attuned to Belt of Dwarvenkind."""
+        m = doc.magic_items["dwarven-thrower"]
+        assert m.attunement == model.Hard(model.In((
+            model.AttunementLineage(model.SrdLineage.DWARF),
+            model.AttunementAttunedTo("belt-of-dwarvenkind"),
+        )))
+
+    @staticmethod
+    def test_attunement_none_when_unrequired(doc):
+        """Magic items without an attunement span return None."""
+        m = doc.magic_items["bag-of-holding"]
+        assert m.attunement is None, (
+            f"bag-of-holding should not require attunement, got {m.attunement!r}"
+        )
+
+    # ---- Attunement grammar: parser unit tests ----
+
+    @staticmethod
+    def test_attunement_parser_any(doc):
+        assert _parse_attunement_logic("is(any)") == model.Is(model.AttunementAny())
+
+    @staticmethod
+    def test_attunement_parser_class(doc):
+        assert _parse_attunement_logic("is(class(bard))") == \
+            model.Is(model.AttunementClass(model.SrdClass.BARD))
+
+    @staticmethod
+    def test_attunement_parser_in_multi(doc):
+        got = _parse_attunement_logic("in([class(cleric), class(druid), class(paladin)])")
+        assert got == model.In((
+            model.AttunementClass(model.SrdClass.CLERIC),
+            model.AttunementClass(model.SrdClass.DRUID),
+            model.AttunementClass(model.SrdClass.PALADIN),
+        ))
+
+    @staticmethod
+    def test_attunement_parser_heterogeneous(doc):
+        got = _parse_attunement_logic(
+            "in([lineage(dwarf), attuned_to(belt-of-dwarvenkind)])"
+        )
+        assert got == model.In((
+            model.AttunementLineage(model.SrdLineage.DWARF),
+            model.AttunementAttunedTo("belt-of-dwarvenkind"),
+        ))
+
+    @staticmethod
+    def test_attunement_parser_whitespace_tolerant(doc):
+        """The parser should tolerate flexible whitespace around tokens."""
+        compact = _parse_attunement_logic("in([class(bard),class(cleric)])")
+        spaced = _parse_attunement_logic("in([ class(bard) , class(cleric) ])")
+        verbose = _parse_attunement_logic("in (\n  [ class(bard),\n    class(cleric) ]\n)")
+        assert compact == spaced == verbose
+
+    @staticmethod
+    def test_attunement_parser_rejects_malformed(doc):
+        """Malformed inputs raise _AttunementParseError."""
+        bad_inputs = [
+            "",                              # empty
+            "is",                            # missing parens
+            "is(",                           # unclosed
+            "is(class)",                     # missing class arg
+            "is(class(unknown_class))",      # unknown enum variant
+            "is(lineage(elf))",              # unknown lineage
+            "is(capability(necromancer))",   # unknown capability
+            "in(class(bard))",               # missing brackets
+            "in([class(bard) class(cleric)])",  # missing comma
+            "in([class(bard),])",            # trailing comma
+            "is(class(bard)) extra",         # trailing tokens
+            "garbage(stuff)",                # unknown op
+        ]
+        for s in bad_inputs:
+            try:
+                _parse_attunement_logic(s)
+                raise AssertionError(f"expected parse error for {s!r}")
+            except _AttunementParseError:
+                pass  # expected
+
+    # ---- Attunement renderer round-trip ----
+
+    @staticmethod
+    def test_attunement_render_roundtrip(doc):
+        """Every canonical clause from the corpus round-trips through parse→render."""
+        canonical = [
+            "is(any)",
+            "is(capability(spellcaster))",
+            "is(class(wizard))",
+            "is(class(paladin))",
+            "is(class(druid))",
+            "in([class(cleric), class(paladin)])",
+            "in([class(bard), class(cleric), class(druid)])",
+            "in([class(cleric), class(druid), class(paladin)])",
+            "in([class(sorcerer), class(warlock), class(wizard)])",
+            "in([class(druid), class(sorcerer), class(warlock), class(wizard)])",
+            "in([class(bard), class(cleric), class(druid), class(sorcerer), class(warlock), class(wizard)])",
+            "in([lineage(dwarf), attuned_to(belt-of-dwarvenkind)])",
+        ]
+        for s in canonical:
+            assert _render_attunement_logic(_parse_attunement_logic(s)) == s, (
+                f"round-trip failed for {s!r}"
+            )
+
+    # ---- Attunement to_dict serialization ----
+
+    @staticmethod
+    def test_attunement_to_dict_json_serializable(doc):
+        """to_dict() output for items with attunement must be json-safe."""
+        for slug in ["holy-avenger", "dwarven-thrower", "bag-of-holding",
+                     "robe-of-the-archmagi", "belt-of-dwarvenkind"]:
+            d = doc.magic_items[slug].to_dict()
+            json.dumps(d)  # raises if not JSON-serializable
+
+    @staticmethod
+    def test_attunement_to_dict_shape(doc):
+        """to_dict() encodes attunement as tagged-dict tree."""
+        d = doc.magic_items["holy-avenger"].to_dict()
+        assert d["attunement"] == {
+            "kind": "hard",
+            "value": {
+                "kind": "is",
+                "value": {"kind": "class", "value": "paladin"},
+            },
+        }
+        d2 = doc.magic_items["dwarven-thrower"].to_dict()
+        assert d2["attunement"] == {
+            "kind": "hard",
+            "value": {
+                "kind": "in",
+                "values": [
+                    {"kind": "lineage", "value": "dwarf"},
+                    {"kind": "attuned_to", "value": "belt-of-dwarvenkind"},
+                ],
+            },
+        }
+        # No attunement
+        d3 = doc.magic_items["bag-of-holding"].to_dict()
+        assert d3["attunement"] is None
+
+    # ---- Attunement soft fallback ----
+
+    @staticmethod
+    def test_attunement_soft_fallback_on_missing_flag(doc):
+        """Direct test of the parser contract: spans without data-exceptional='logic'
+        fall to Soft(text). We synthesize one in-memory since the corpus has none."""
+        from lxml import html as _h
+        synthetic = _h.fromstring(
+            '<section class="magic-item" id="magic-item-test">'
+            '<h4>Test Item</h4>'
+            '<p class="magic-item-general">'
+            '  <span class="magic-item-category">Wondrous Item</span>, '
+            '  <span class="magic-item-rarity">Common</span> '
+            '  (<span class="magic-item-attunement">Requires Attunement by a Squirrel</span>)'
+            '</p>'
+            '<div class="magic-item-description"><p>Test.</p></div>'
+            '</section>'
+        )
+        # The synthetic span has no data-exceptional flag, so it should fall to Soft
+        mi = query.MagicItem(synthetic)
+        assert isinstance(mi.attunement, model.Soft)
+        assert mi.attunement.value == "Requires Attunement by a Squirrel"
+
+    @staticmethod
+    def test_attunement_soft_fallback_on_parse_error(doc):
+        """When data-exceptional='logic' is set but data-logic is malformed,
+        fall to Soft(text)."""
+        from lxml import html as _h
+        synthetic = _h.fromstring(
+            '<section class="magic-item" id="magic-item-test">'
+            '<h4>Test Item</h4>'
+            '<p class="magic-item-general">'
+            '  <span class="magic-item-category">Wondrous Item</span>, '
+            '  <span class="magic-item-rarity">Common</span> '
+            '  (<span class="magic-item-attunement" data-exceptional="logic"'
+            '         data-logic="garbage(stuff)">Requires Attunement</span>)'
+            '</p>'
+            '<div class="magic-item-description"><p>Test.</p></div>'
+            '</section>'
+        )
+        mi = query.MagicItem(synthetic)
+        assert isinstance(mi.attunement, model.Soft)
+        assert mi.attunement.value == "Requires Attunement"
+
+    # ---- Charges: parser unit tests ----
+
+    @staticmethod
+    def test_parse_roll_bare(doc):
+        assert _parse_roll("1d6") == model.Roll(n=1, d=model.Die.D6, modifier=None)
+        assert _parse_roll("2d10") == model.Roll(n=2, d=model.Die.D10, modifier=None)
+
+    @staticmethod
+    def test_parse_roll_with_add(doc):
+        assert _parse_roll("2d6 + 3") == model.Roll(
+            n=2, d=model.Die.D6,
+            modifier=model.RollModifier(op=model.Op.ADD, value=3),
+        )
+
+    @staticmethod
+    def test_parse_roll_with_subtract(doc):
+        assert _parse_roll("3d6 - 3") == model.Roll(
+            n=3, d=model.Die.D6,
+            modifier=model.RollModifier(op=model.Op.SUBTRACT, value=3),
+        )
+
+    @staticmethod
+    def test_parse_roll_with_multiply(doc):
+        assert _parse_roll("1d10 x 10") == model.Roll(
+            n=1, d=model.Die.D10,
+            modifier=model.RollModifier(op=model.Op.MULTIPLY, value=10),
+        )
+
+    @staticmethod
+    def test_parse_roll_whitespace_tolerant(doc):
+        compact = _parse_roll("2d6+3")
+        spaced = _parse_roll("2d6 + 3")
+        verbose = _parse_roll("  2d6   +   3  ")
+        assert compact == spaced == verbose
+
+    @staticmethod
+    def test_parse_roll_rejects_malformed(doc):
+        for s in [
+            "",                    # empty
+            "d6",                  # bare dN (narrative-only in SRD; not structured)
+            "1d6 +",               # incomplete modifier
+            "1d6 + abc",           # non-numeric modifier value
+            "1d6 + 2 + 3",         # chained modifiers (not in SRD grammar)
+            "1d5",                 # unknown die size
+            "1d6 * 2",             # wrong multiply char (SRD uses 'x')
+            "foo",                 # not a roll
+        ]:
+            try:
+                _parse_roll(s)
+                raise AssertionError(f"expected parse error for {s!r}")
+            except _RollParseError:
+                pass
+
+    @staticmethod
+    def test_render_roll_roundtrip(doc):
+        """Every canonical shape from the survey round-trips through parse -> render."""
+        for s in [
+            "1d6",
+            "2d8",
+            "1d20",
+            "2d6 + 3",
+            "1d8 + 1",
+            "3d6 - 3",
+            "1d10 x 10",
+            "1d4 x 10",
+        ]:
+            assert _render_roll(_parse_roll(s)) == s, f"roundtrip failed: {s!r}"
+
+    @staticmethod
+    def test_parse_charges_dispatch(doc):
+        """Presence of 'd' in token selects Rolled; otherwise Fixed."""
+        assert _parse_charges("7") == model.Fixed(7)
+        assert _parse_charges("50") == model.Fixed(50)
+        assert _parse_charges("1d3") == model.Rolled(
+            model.Roll(n=1, d=model.Die.D3, modifier=None)
+        )
+        assert _parse_charges("1d8 + 1") == model.Rolled(
+            model.Roll(n=1, d=model.Die.D8,
+                       modifier=model.RollModifier(op=model.Op.ADD, value=1))
+        )
+
+    # ---- Charges: mapping tests (representative items pinned) ----
+
+    @staticmethod
+    def test_wand_of_magic_missiles_charges(doc):
+        m = doc.magic_items["wand-of-magic-missiles"]
+        assert m.charges == model.Fixed(7)
+
+    @staticmethod
+    def test_staff_of_the_magi_charges(doc):
+        m = doc.magic_items["staff-of-the-magi"]
+        assert m.charges == model.Fixed(50)
+
+    @staticmethod
+    def test_luck_blade_charges(doc):
+        """Dice capacity (no modifier)."""
+        m = doc.magic_items["luck-blade"]
+        assert m.charges == model.Rolled(
+            model.Roll(n=1, d=model.Die.D3, modifier=None)
+        )
+
+    @staticmethod
+    def test_nine_lives_stealer_charges(doc):
+        """Dice capacity (with add modifier). Span lives inside a non-variant
+        special_rule's <dd>, so the parent-level detection must look outside
+        the description div."""
+        m = doc.magic_items["nine-lives-stealer"]
+        assert m.charges == model.Rolled(
+            model.Roll(
+                n=1, d=model.Die.D8,
+                modifier=model.RollModifier(op=model.Op.ADD, value=1),
+            )
+        )
+
+    @staticmethod
+    def test_cube_of_force_charges(doc):
+        """Pattern: 'starts with N charges'."""
+        m = doc.magic_items["cube-of-force"]
+        assert m.charges == model.Fixed(10)
+
+    @staticmethod
+    def test_ring_of_three_wishes_charges(doc):
+        """Pattern: 'expend 1 of its 3 charges' — wrap the capacity (3), not the spend (1)."""
+        m = doc.magic_items["ring-of-three-wishes"]
+        assert m.charges == model.Fixed(3)
+
+    @staticmethod
+    def test_figurine_ivory_goats_variant_charges(doc):
+        """Variant-level charge: figurine itself has no parent-level charges,
+        but the Ivory Goats variant carries Fixed(24) via a nested dl/dt/dd."""
+        m = doc.magic_items["figurine-of-wondrous-power"]
+        assert m.charges is None, f"figurine parent should have no charges, got {m.charges!r}"
+        ivory = next((v for v in m.variants if v["name"] == "Ivory Goats"), None)
+        assert ivory is not None
+        assert ivory["charges"] == model.Fixed(24)
+
+    @staticmethod
+    def test_bag_of_holding_no_charges(doc):
+        """Items without charge mechanic return None."""
+        m = doc.magic_items["bag-of-holding"]
+        assert m.charges is None
+
+    # ---- Charges: corpus-wide invariant ----
+
+    @staticmethod
+    def test_charges_total_extraction(doc):
+        """Sum of parent.charges + variant.charges should match the count of
+        <span class='magic-item-charges'> in the source (51 in SRD 5.2.1)."""
+        parent_count = sum(1 for m in doc.magic_items if m.charges is not None)
+        variant_count = sum(
+            1 for m in doc.magic_items
+            for v in m.variants if v.get("charges") is not None
+        )
+        assert parent_count + variant_count == 51, (
+            f"expected 51 total charge extractions, "
+            f"got {parent_count} parent + {variant_count} variant = "
+            f"{parent_count + variant_count}"
+        )
+
+    # ---- Charges: to_dict serialization ----
+
+    @staticmethod
+    def test_charges_to_dict_shape(doc):
+        """to_dict encodes charges as tagged record."""
+        d = doc.magic_items["wand-of-magic-missiles"].to_dict()
+        assert d["charges"] == {"kind": "fixed", "value": 7}
+
+        d2 = doc.magic_items["luck-blade"].to_dict()
+        assert d2["charges"] == {
+            "kind": "rolled",
+            "value": {"n": 1, "d": "d3", "modifier": None},
+        }
+
+        d3 = doc.magic_items["nine-lives-stealer"].to_dict()
+        assert d3["charges"] == {
+            "kind": "rolled",
+            "value": {
+                "n": 1, "d": "d8",
+                "modifier": {"op": "add", "value": 1},
+            },
+        }
+
+        # Variant-level
+        d4 = doc.magic_items["figurine-of-wondrous-power"].to_dict()
+        assert d4["charges"] is None
+        ivory = next(v for v in d4["variants"] if v["name"] == "Ivory Goats")
+        assert ivory["charges"] == {"kind": "fixed", "value": 24}
+
+        # No charges
+        d5 = doc.magic_items["bag-of-holding"].to_dict()
+        assert d5["charges"] is None
+
+    @staticmethod
+    def test_charges_to_dict_json_serializable(doc):
+        """to_dict() output for items with each charge variant must be json-safe."""
+        for slug in ["wand-of-magic-missiles", "luck-blade", "nine-lives-stealer",
+                     "figurine-of-wondrous-power", "bag-of-holding"]:
+            d = doc.magic_items[slug].to_dict()
+            json.dumps(d)  # raises if not JSON-serializable
 
 
 if __name__ == "__main__":

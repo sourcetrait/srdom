@@ -7,7 +7,7 @@
 # Nushell after the JSON arrives; the Python script only parses SRDOM
 # and emits.
 #
-# Module version: 0.3.0
+# Module version: 0.7.2
 #
 # NOTE FOR AI AGENTS:
 # This file is a thin wrapper. For programmatic use, prefer calling
@@ -147,15 +147,50 @@ export def "srdom creature" [
 # Emit all magic items as a Nushell table.
 #
 # Each row includes structural fields including `category`, `category_description`,
-# `rarities` (list), `rarity_tiers` (paired list), `attunement` (full clause or
-# null; check `($row.attunement | is-not-empty)` for attunement requirement),
-# `variants` (list).
+# `rarity` (string enum value or null — `common`, `uncommon`, `rare`, `very_rare`,
+# `legendary`, `artifact`; null when the item is multi-variant with no canonical
+# rarity, e.g., weapon), `variants` (list of records with `slug`, `name`,
+# `rarity`, `description`, `charges`), `attunement` (a tagged record — see below — or null),
+# `special_rules` (list of records with `slug`, `heading`, `content`),
+# `charges` (a tagged record — see below — or null).
+#
+# `attunement` shape (option<fuzz<logic<attunement_requirement>>>):
+#   null                                          - no attunement required
+#   {kind: "hard", value: <logic>}                - structured form (from data-logic)
+#   {kind: "soft", value: "<prose>"}              - prose escape (markup-incomplete)
+# where <logic> is a tagged record:
+#   {kind: "is", value: <req>}
+#   {kind: "in",  values: [<req>, ...]}
+#   {kind: "not_in", values: [<req>, ...]}
+#   {kind: "not", value: <logic>}
+#   {kind: "and", values: [<logic>, ...]}
+#   {kind: "or",  values: [<logic>, ...]}
+# and <req> is one of:
+#   {kind: "any"}
+#   {kind: "class",      value: <srd_class>}      - e.g., "bard", "paladin"
+#   {kind: "lineage",    value: <srd_lineage>}    - e.g., "dwarf"
+#   {kind: "capability", value: <capability>}     - e.g., "spellcaster"
+#   {kind: "attuned_to", value: <slug>}           - other magic-item slug
+#
+# `charges` shape (option<unum> in DOMMF terms):
+#   null                                          - no charge mechanic
+#   {kind: "fixed",  value: <int>}                - literal capacity (e.g., 7)
+#   {kind: "rolled", value: <roll>}               - dice-determined capacity
+# where <roll> is:
+#   {n: <int>, d: "d3"|"d4"|...|"d100", modifier: null | <roll_modifier>}
+# and <roll_modifier> is:
+#   {op: "add"|"subtract"|"multiply"|"divide", value: <int>}
 #
 # Examples:
 #     srdom magic-items | where category == "Wondrous Item"
-#     srdom magic-items | where ($it.attunement | is-not-empty) | length
-#     srdom magic-items | where ($it.variants | length) > 0 | get title
-#     srdom magic-items | where ("Legendary" in rarities) | select name category
+#     srdom magic-items | where ($it.attunement | is-not-empty) | length     # all requiring attunement
+#     srdom magic-items | where $it.attunement?.kind == "hard"               # only structured (parseable)
+#     srdom magic-items | where ($it.charges | is-not-empty)                 # items with any charge mechanic
+#     srdom magic-items | where $it.charges?.kind == "fixed" | get slug charges.value
+#     srdom magic-items | where $it.charges?.kind == "rolled" | get slug name # dice-determined charges
+#     srdom magic-items | where ($it.variants | length) > 0 | get name
+#     srdom magic-items | where rarity == "legendary" | select name category
+#     srdom magic-items | where (($it.variants | any { |v| $v.rarity == "legendary" }))
 export def "srdom magic-items" [
     --source (-s): string
 ] {
@@ -166,8 +201,13 @@ export def "srdom magic-items" [
 #
 # Examples:
 #     srdom magic-item holy-avenger
-#     srdom magic-item weapon | get rarity_tiers
+#     srdom magic-item holy-avenger | get attunement      # {kind: hard, value: {kind: is, value: {kind: class, value: paladin}}}
+#     srdom magic-item luck-blade | get charges           # {kind: rolled, value: {n: 1, d: d3, modifier: null}}
+#     srdom magic-item wand-of-magic-missiles | get charges    # {kind: fixed, value: 7}
+#     srdom magic-item weapon | get variants
 #     srdom magic-item figurine-of-wondrous-power | get creature
+#     srdom magic-item figurine-of-wondrous-power | get variants | where name == "Ivory Goats" | get 0.charges
+#     srdom magic-item potion-of-healing | get variants | where rarity == "uncommon"
 export def "srdom magic-item" [
     slug: string             # the magic item slug (e.g., "holy-avenger", "weapon")
     --source (-s): string
