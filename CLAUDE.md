@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-*Revision 10 (2026-05-21)*
+*Revision 11 (2026-05-21)*
 
 A working-context reference for Claude (me) when picking up SRDOM project work
 in a fresh conversation. Roy commits this to the repo so it survives memory
@@ -833,6 +833,71 @@ When two same-slugging headings actually need distinct slugs, use
 `data-exceptional="reslug"` with a paired `data-slug` attribute (see
 above).
 
+### DOMMF spec evolution: union, fuzz, logic
+
+*See DOM-Contract.md for the formal definitions; this is the operational
+summary.*
+
+The DOMMF format has grown three constructs beyond the original
+`model` / `enum`:
+
+- **`union`** keyword — a sum type whose variants may carry associated
+  types. Use when an enumeration needs Rust-tuple-variant-style data
+  on some/all variants. Variants without payload coexist with variants
+  carrying one or more positional associated types (zero-indexed).
+  Pure `enum` remains for the fieldless case; the moment any variant
+  needs payload, the whole construct moves to `union`.
+
+- **`fuzz<T>`** data type — a sum that's either `hard<T>` (structured
+  per the inner type) or `soft<string(md)>` (prose escape hatch). Use
+  for fields that *should* be typed but where the source occasionally
+  goes off-script. Lets the consumer process the typed cases
+  efficiently while preserving fidelity for the prose-escape ones.
+
+- **`logic<T>`** data type — a boolean expression tree over leaf type
+  `T`. Six variants: `is<T>`, `in<vec<T>>`, `not_in<vec<T>>`,
+  `not<logic<T>>`, `and<vec<logic<T>>>`, `or<vec<logic<T>>>`. Use for
+  any field that expresses predicates over a domain (attunement gates,
+  prerequisites, conditional triggers). Sugary `in`/`not_in` are
+  reducible to the core combinators but preferred for the common
+  multi-value-membership case.
+
+Reserved keywords now include `union`, `fuzz`, `logic`, `is`, `in`,
+`not_in`, `not`, `and`, `or`, plus the prior `model`, `enum`, `vec`,
+`map`, `option`, `none`, `some`, `string`, `bool`, `i32`, `u32`, `f32`,
+`slug`, `snake`, `md`, `hard`, `soft`.
+
+### Attunement modeling pattern (srdom.dommf v current)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+`magic_item.attunement` is typed as
+`option<fuzz<logic<attunement_predicate>>>`. Each wrap layer earns its
+keep:
+
+- **`option`** — does the item require attunement at all? `none` for
+  no-attunement items, `some(...)` for required.
+- **`fuzz`** — `hard<logic<attunement_predicate>>` for SRD clauses we
+  can parse into structured predicates; `soft<string(md)>` for prose
+  escape (currently unused but reserved for future irregular clauses).
+- **`logic`** — the boolean expression tree over predicates: `is(...)`,
+  `in([...])`, `or([...])`, etc.
+
+`attunement_predicate` is a `union` covering: `any` ("Requires Attunement"
+with no qualifier), `class(srd_class)`, `lineage(srd_lineage)`,
+`capability(capability)`, `attuned_to(string(slug))` (self-referential —
+slug references another magic_item).
+
+The 12 unique SRD 5.2.1 attunement clauses all fit this shape. The
+worked encodings live in the past-conversation transcript; sanity-check
+any new attunement clause from a future SRD against the same pattern
+before extending the predicate union.
+
+This same triple-wrap pattern (`option<fuzz<logic<P>>>`) is a candidate
+shape for any future field that needs the combination of (optionality ×
+structured-vs-prose × boolean predicates) — e.g., trait prerequisites,
+conditional activation gates, multi-class spell sources.
+
 
 ## 12. Common operations cheat sheet
 
@@ -924,6 +989,15 @@ remove them from here.
   situation_uses.** The model and query layer are ready (with TODO test
   placeholders); the HTML markup itself hasn't been added. Currently
   the lib returns `""`, `0`, `{}` placeholders for these fields.
+- **Attunement parsing in srdom.py.** `magic_item.attunement` is now
+  modeled as `option<fuzz<logic<attunement_predicate>>>` (see §11), but
+  the lib still surfaces the raw clause string. Need to write a parser
+  that turns "Requires Attunement by a Bard, Cleric, or Druid" into
+  `some(hard(in([class(bard), class(cleric), class(druid)])))`, with
+  `soft(...)` fallback for any clause the parser can't recognize.
+  Currently only 12 unique clauses exist in the corpus; the parser
+  should cover those exhaustively and fall through to soft for
+  unknowns. Tests should pin all 12 mappings.
 - **Cell-merge defects in the damage glossary table.** Originally
   flagged during a survey; turned out to be a false positive from the
   survey script (text_content concatenation across cells). No fix
