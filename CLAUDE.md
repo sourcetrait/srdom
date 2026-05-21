@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-*Revision 13 (2026-05-21)*
+*Revision 20 (2026-05-21)*
 
 A working-context reference for Claude (me) when picking up SRDOM project work
 in a fresh conversation. Roy commits this to the repo so it survives memory
@@ -146,6 +146,13 @@ These are signals I have learned over many sessions. Read them literally.
 - **"...?"** is an open question. Do not assume he wants a specific
   answer; give him the actual answer with caveats.
 
+**Default: no changes without explicit go.** During iterative review, a
+re-posted plan with my requested fixes incorporated is NOT approval — it
+is continued iteration. Even if the iteration "feels complete," wait for
+"apply", "proceed", "make the change", "go", or another unambiguous
+green light before touching files. Read-only operations (view, grep,
+survey scripts) are fine; any edit, write, or file copy is not.
+
 ### His tolerance for mistakes
 
 High, as long as I learn from them and do not repeat them. The worst
@@ -159,14 +166,54 @@ section.
 ## 3. Repository and file layout
 
 - `/srdom.html` - the document. ~2.85 MB, ~50k lines.
-- `/srdom.py` - the Python library. Single file, ~99 KB in v0.6.0.
-- `/srdom.nu` - the Nushell wrapper. Single file, ~9 KB in v0.5.0.
+- `/srdom.py` - the Python library. Single file, ~117 KB in v0.7.2.
+- `/srdom.nu` - the Nushell wrapper. Single file, ~11 KB in v0.7.2.
 - `/_headers` - Cloudflare Pages content-type overrides.
 - `/CLAUDE.md` - this file.
 - `/DOM-Contract.md` - the format-spec contract (DOMMF + DOMQF grammar).
 - `/srdom.dommf` - the SRDOM-specific data model instance, expressed in DOMMF.
 - `/srdom.domqf` - the SRDOM-specific query interface instance, expressed in DOMQF (WIP).
 - (Maybe later: separate files for examples, tests, etc.)
+
+### File authorship
+
+Default authorship splits along an implementation/spec line:
+
+- **I author** (Roy reviews, confirms, commits): srdom.html, srdom.py,
+  srdom.nu, CLAUDE.md.
+- **Roy authors** (I review, point out gaps, propose shapes — but
+  do not edit): DOM-Contract.md, srdom.dommf, srdom.domqf.
+
+For the Roy-authored files, the working pattern is: I survey the
+corpus, surface variations, propose model shapes; Roy drafts/edits the
+spec file directly; he re-uploads to my context with the changes
+incorporated. I never `str_replace` or `create_file` against those
+paths unless he explicitly asks me to. "Most of the time" hedge per
+Roy: if he ever directs me to edit one of his files, do so for that
+session; the default stays as above.
+
+### Change-surfacing protocol
+
+The pre-work required before a change depends on which file(s) it
+touches:
+
+- **High-touch — present a plan, wait for explicit go before
+  applying.** srdom.html and the design docs (DOM-Contract.md,
+  srdom.dommf, srdom.domqf). For srdom.html, present the
+  markup/parser plan in chat and wait for "apply" / "proceed" /
+  similar. For the design docs (Roy-authored per File authorship
+  above), I propose the shape; Roy edits the file himself and
+  re-uploads.
+- **Low-touch — minimal notice, then act.** srdom.py and srdom.nu.
+  Once a task has been requested, briefly state what's being added or
+  changed and proceed. The original task request is the go signal;
+  no separate "apply" is needed.
+- **Self-managed — rev number only.** CLAUDE.md. Bump the rev marker
+  when meaningfully edited and announce the new rev. No recap of
+  edits.
+
+This refines §2's default-no-changes-without-go rule. The default
+still holds; what differs by file is what counts as the go signal.
 
 The published URLs are:
 
@@ -266,29 +313,49 @@ working files in outputs; Roy controls everything in git.
 ### Version conventions
 
 Everything in `/home/claude/build/` carries a `-draft` suffix in its
-version meta (e.g. `0.6.0-draft`). Published versions on the live site
+version meta (e.g. `0.7.0-draft`). Published versions on the live site
 are referred to as `X.Y.Z-past` to make conversational disambiguation
 unambiguous: "the past version" is what is live, "the draft" is what is
 in build.
 
-When Roy confirms a draft is good to publish, I strip the `-draft`
-suffix as the final pre-publish step. The next iteration begins by
-bumping the version and re-appending `-draft`.
+**Version-bump scheme (effective rev 18+):**
+
+- **Iterative changes within a release cycle: bump the PATCH version.**
+  A cycle starts at `0.X.0-draft`. Each change I make during that cycle
+  bumps patch: `0.X.0-draft` → `0.X.1-draft` → `0.X.2-draft` → ... Every
+  edit that gets presented to Roy is a patch bump; size of the change
+  doesn't matter. This makes the patch number a counter of iterations
+  within the cycle.
+- **Cutting a release: just strip `-draft`.** The current draft becomes
+  the released version (e.g., `0.7.5-draft` → `0.7.5`). No version-number
+  change beyond removing the suffix.
+- **Starting the next cycle: bump MINOR, reset patch to 0, re-add `-draft`.**
+  After release `0.7.5`, the next iteration begins at `0.8.0-draft`.
+  First change in that cycle goes to `0.8.1-draft`, then `0.8.2-draft`,
+  etc.
+- **Major (`X`) bumps**: reserved for Roy's discretion (e.g., a 1.0
+  cut). Don't bump major during normal iteration.
+
+This replaces the prior "bump minor on each substantial change" scheme,
+which conflated release cuts with iteration counters and produced wide
+minor-version gaps with nothing released between them.
 
 **srdom.html has TWO version markers** that both need to be updated
 when bumping or cutting:
 
 ```html
-<meta name="version" content="0.6.0">       <!-- machine-readable -->
-<dd id="project-version"><p>0.6.0</p></dd>  <!-- in the for-humans Version dt/dd -->
+<meta name="version" content="0.7.0-draft"/>          <!-- machine-readable -->
+<dd id="project-version"><p>0.7.0-draft</p></dd>      <!-- in the for-humans Version dt/dd -->
 ```
 
 I missed the second one when cutting v0.6.0; Roy had to fix it manually.
 Always check both.
 
-Version bump policy is fuzzy. Major refactors warrant minor bumps
-(0.5 → 0.6); small fixes typically share a version with the prior
-draft. Roy decides when to bump.
+Each of srdom.html, srdom.py, srdom.nu carries its own independent
+version. They don't have to move in lockstep — but in practice, work
+usually touches at least two of them, so they tend to drift together.
+CLAUDE.md uses its own revision counter (single monotonic integer);
+it is NOT versioned in the SemVer sense.
 
 
 ## 6. Voice and response patterns
@@ -767,6 +834,34 @@ Current tokens:
   spans (every one — uniform application). Bare "Requires Attunement"
   explicitly carries `data-logic="is(any)"`; no implicit default rule.
 
+### When NOT to use data-exceptional (the heuristic)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+`data-exceptional` + a paired `data-*` payload is for when the source
+prose *cannot directly encode* the structured form. The classic case is
+attunement: prose like "Requires Attunement by a Bard, Cleric, or Druid"
+is English; it requires translation to become a logic AST. The data-logic
+payload carries that translation.
+
+The inverse case — where the source token *is* the canonical
+machine-readable form — does NOT use data-exceptional. Examples:
+
+- **`<span class="magic-item-charges">7</span>`** — the literal "7" is the
+  capacity. A 3-line dispatcher (`"d" in text` → roll, else int) does the
+  rest. No data-* payload.
+- **`<span class="magic-item-charges">1d3</span>`** — the literal "1d3"
+  is the structured roll. Parser is `XdN [op Y]` regex; no translation.
+- Slugs, integer literals, dice expressions, identifier tokens — all
+  fit the "source is canonical" pattern. Wrap with a class; let the
+  consumer parse the token.
+
+Heuristic: if a 2–5 line function in the consumer language can extract
+the structured form from the span's text, use class-only. Reserve
+data-exceptional + data-* for cases that require translation beyond
+trivial parsing (logical structure from English prose, exception flags
+that override default extraction rules).
+
 ### data-* payload attributes (data-slug, data-logic)
 
 *Candidate for future for-ai-agents documentation; regenerative.*
@@ -938,7 +1033,7 @@ Reserved keywords now include `union`, `fuzz`, `logic`, `is`, `in`,
 `map`, `option`, `none`, `some`, `string`, `bool`, `i32`, `u32`, `f32`,
 `slug`, `snake`, `md`, `hard`, `soft`.
 
-### Attunement modeling pattern (srdom.dommf v current, srdom.py v0.6.0+)
+### Attunement modeling pattern (srdom.dommf v current, srdom.py v0.7.2+)
 
 *Candidate for future for-ai-agents documentation; regenerative.*
 
@@ -961,8 +1056,8 @@ with no qualifier), `class(srd_class)`, `lineage(srd_lineage)`,
 slug references another magic_item).
 
 The 12 unique SRD 5.2.1 attunement clauses all fit this shape and all 139
-attunement spans in srdom.html v0.8.0+ carry `data-exceptional="logic"`
-+ `data-logic="..."`. The library (srdom.py v0.6.0+) parses each span's
+attunement spans in srdom.html v0.7.2+ carry `data-exceptional="logic"`
++ `data-logic="..."`. The library (srdom.py v0.7.2+) parses each span's
 `data-logic` into `Hard(logic_tree)` via `_parse_attunement_logic`;
 parse failure → `Soft(visible_text)`. Tests `test_attunement_*` pin all
 12 mappings plus the soft-fallback paths.
@@ -971,6 +1066,110 @@ This same triple-wrap pattern (`option<fuzz<logic<P>>>`) is a candidate
 shape for any future field that needs the combination of (optionality ×
 structured-vs-prose × boolean predicates) — e.g., trait prerequisites,
 conditional activation gates, multi-class spell sources.
+
+### Roll / dice notation (srdom.dommf v current, srdom.py v0.7.2+)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+DOMMF models a roll as `model roll { n: u32, d: die, modifier: option<roll_modifier> }`
+with `roll_modifier = { op: op, value: u32 }`. The closed vocabularies:
+
+- `die`: `d3, d4, d6, d8, d10, d12, d20, d100` — every size that appears
+  in SRD 5.2.1
+- `op`: `add, subtract, multiply, divide` — `divide` reserved for
+  posterity (no corpus usage); `add`/`subtract`/`multiply` cover all
+  774 modifier-bearing dice expressions
+
+The on-page notation matches the DOMMF declaration:
+
+```
+roll        := dice [ ws op ws integer ]
+dice        := integer 'd' integer
+op-char     := '+' | '-' | 'x'        # ASCII 'x', not Unicode '×' (normalized in earlier passes)
+```
+
+Grammar facts from the corpus survey (1867 dice tokens across the whole
+document):
+
+- Four shapes only: `D` (bare XdN), `D+N`, `D-N`, `DxN`. No chained dice
+  (no `1d6 + 1d8` anywhere); no parens; at most one modifier per expression
+- Bare `dN` (count omitted) appears 50 times, *all* `d20`, *all* in
+  narrative prose ("a d20 roll"). NEVER appears as a structured mechanic
+  in a stat block or in a structured-extract span. The parser does NOT
+  accept bare `dN`; require explicit count
+- No exotic dice (no `d%`, no `dF`, no `d2`)
+
+### Charges field (srdom.html v0.7.2+, srdom.py v0.7.2+)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+`magic_item.charges` and `magic_item_variant.charges` are both
+`option<unum>`. The on-page markup wraps just the count token:
+
+```html
+The wand has <span class="magic-item-charges">7</span> charges.
+The weapon has <span class="magic-item-charges">1d3</span> charges.
+The weapon has <span class="magic-item-charges">1d8 + 1</span> charges.
+```
+
+No `data-exceptional` flag, no `data-*` payload — per the heuristic
+above, the source token is the canonical machine-readable form. The
+extractor dispatches on `"d" in text` to choose `Fixed(int)` vs
+`Rolled(Roll(...))`. Recharge dice expressions are NOT wrapped this
+pass (separate field, deferred).
+
+**Parent-vs-variant disambiguation.** A `magic-item-charges` span is
+variant-level if ANY enclosing block (`dd`/`p`/`td`/`h4`) shares scope
+with a `magic-item-variant-name` span. Otherwise it's parent-level.
+This walks ALL ancestor blocks (nested dt/dd matters — see
+`figurine-of-wondrous-power`'s Ivory Goats variant, where the "24 charges"
+span sits in a nested inner dl/dt/dd that's inside the variant's outer
+dd). One edge case worth knowing: `nine-lives-stealer`'s parent capacity
+declaration lives inside a non-variant special_rule dd (Life Stealing),
+not in the description div, so the parent's charges XPath must search
+the whole section, not just the description.
+
+51 total charges spans in SRD 5.2.1: 50 parent-level + 1 variant-level
+(Ivory Goats).
+
+### Numeric coercion rules (unum / inum)
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+`unum` and `inum` are SRDOM-specific unions over `fixed(u32|i32)` and
+`rolled(roll)`. They model "an integer that may be expressed either as
+a literal or as a dice expression." Coercion rules from the DOMMF
+comments:
+
+- **`unum`** — `clamped to 0. as float: floor()`. Underflow (subtract
+  producing negative result) clamps to 0; fractional results (divide)
+  floor.
+- **`inum`** — `as float: floor()`. Fractional results floor.
+  Underflow rule doesn't apply (signed accommodates negatives natively).
+
+Both rules match SRD's universal round-down convention ("Whenever you
+divide or multiply a number in the game, round down if you end up with
+a fraction." — round-up is per-mechanic, never type-level).
+
+**Implementer footgun (Rust).** Rust's native `as i32`/`as u32` casts
+and the integer `/` operator both **truncate toward zero**, not floor.
+For `unum` this is identical to floor (non-negative range), so Rust's
+defaults work. For `inum` it diverges on negatives:
+
+```rust
+-7 / 3            // -2, truncate toward zero (Rust default)
+(-7_i32).div_euclid(3)  // -3, floor (matches spec)
+```
+
+The correct Rust idiom for inum coercion is `i32::div_euclid` (which
+matches floor for positive divisors) or explicit `(x as f64).floor() as i32`.
+Native `/` and `as` casts are wrong for the `inum` divide-on-negatives
+case.
+
+These coercion rules apply at *evaluation time*, not at extraction time.
+The lib produces structured Fixed/Rolled values; computing the concrete
+integer (rolling the dice, applying modifiers, applying the coercion) is
+a consumer concern.
 
 
 ## 12. Common operations cheat sheet
