@@ -18,7 +18,7 @@ as a living document.
 
 ## 1. Project at a glance
 
-SRDOM is a structured HTML representation of the D&D System Reference
+SRDOM is a structured HTML representation of the System Reference
 Document 5.2.1, designed to be queryable as a Document Object Model. It is
 maintained by Roy Laurie under SourceTrait, a division of Asmov LLC, and
 published at https://srdom.sourcetrait.pub/. License: CC-BY-4.0.
@@ -581,6 +581,17 @@ when the correct name "Roy Laurie" was in a fetched sourcetrait.com
 page I'd looked at minutes earlier. The pattern is dangerous because
 the wrong answer feels plausible and confident. Always verify against
 the live context before writing.
+
+### Don't write "D&D" or "Dungeons & Dragons" in source
+
+Per the SRD 5.2.1 CC-BY-4.0 attribution clause: only the Wizards-provided
+attribution statement may name Wizards or the SRD directly. Elsewhere,
+compatibility must be expressed as "5E compatible" or "compatible with
+fifth edition." Source files (srdom.py, srdom.nu, CLAUDE.md, docstrings,
+CLI help text, error messages) must not use the D&D or Dungeons & Dragons
+trademarks. The phrase "SRD 5.2.1" alone is acceptable in descriptive
+context; pair it with "5E compatible" rather than "D&D" when describing
+the system.
 
 ### File handles to /home/claude/build vs /mnt/user-data/outputs
 
