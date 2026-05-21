@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-*Revision 4 (2026-05-20)*
+*Revision 9 (2026-05-21)*
 
 A working-context reference for Claude (me) when picking up SRDOM project work
 in a fresh conversation. Roy commits this to the repo so it survives memory
@@ -23,10 +23,68 @@ Document 5.2.1, designed to be queryable as a Document Object Model. It is
 maintained by Roy Laurie under SourceTrait, a division of Asmov LLC, and
 published at https://srdom.sourcetrait.pub/. License: CC-BY-4.0.
 
-The repository is https://github.com/sourcetrait/srdom. Deployment is via
-Cloudflare Pages from the `www` branch (and sometimes a `draft` staging
-branch). The `_headers` file sets Content-Type: text/plain for the .py
-and .nu files so they serve correctly when fetched.
+The repository is https://github.com/sourcetrait/srdom. The branch
+structure is more involved than a typical project:
+
+- **`draft/roylaurie`** - the working branch where day-to-day commits
+  land. This is where I get committed to from `/home/claude/build/`
+  after Roy reviews and confirms.
+- **`main`** - the stable line. When Roy cuts a version, he rebases
+  `draft/roylaurie` as he sees fit and fast-forward merges it into
+  `main`.
+- **`www`** - an orphan branch where the published files actually
+  live. Roy manually copies files from `main` via `git show` into
+  this branch when he wants to publish to the web. Cloudflare Pages
+  deploys from here.
+- **`ai`** - another orphan branch where this CLAUDE.md file lives.
+  Roy commits new revisions here when I present them. This file is
+  not part of the main tree; it sits in its own isolated branch.
+
+So when I present an updated srdom.html, srdom.py, or srdom.nu, those
+go to `draft/roylaurie`. When I present an updated CLAUDE.md, that
+goes to `ai`. When Roy publishes, files manually flow from `main` to
+`www`.
+
+To fetch CLAUDE.md from a fresh session without conversation history:
+
+```
+git fetch origin ai
+git show origin/ai:CLAUDE.md
+```
+
+Or via the GitHub raw URL pattern:
+`https://raw.githubusercontent.com/sourcetrait/srdom/ai/CLAUDE.md`.
+
+Deployment chain: `www` branch → Cloudflare Pages → published at
+https://srdom.sourcetrait.pub/. The `_headers` file (also on `www`)
+sets `Content-Type: text/plain` for the .py and .nu files so they
+serve correctly when fetched.
+
+**Claude environment landscape.** This repo has been worked on across
+several Claude environments. Each has different ergonomics; the file
+count is small enough that none is critical:
+
+- **claude.ai chat (web/desktop)** - Roy's primary working environment.
+  Cross-session memory carries continuity between conversations, which
+  Roy values. CLAUDE.md is not auto-loaded here; future-fresh-Claude
+  landing in a chat session should fetch CLAUDE.md from the `ai` branch
+  (raw GitHub URL `https://raw.githubusercontent.com/sourcetrait/srdom/ai/CLAUDE.md`)
+  as a bootstrap step when memory doesn't carry it. srdom.html and
+  other large files sit in a sandbox at `/home/claude/build/` during a
+  session.
+- **Claude Code (local CLI)** - auto-loads CLAUDE.md from the project
+  root, reads other files on-demand from the local filesystem. Fits
+  the file shape of this repo naturally and benefits from local
+  tooling, but Roy doesn't use it as his default since chat-mode
+  memory is more valuable to him than file access for this small a
+  project.
+- **Claude Projects** - pre-loads connected sources into project
+  context at session start, which means srdom.html (~700K tokens)
+  blows the budget. Not viable with `main` or `www` connected. The
+  workable configuration is connecting only the `ai` branch (just
+  CLAUDE.md, ~7K tokens) and fetching srdom files via web_fetch as
+  needed. Roy generally wouldn't use Projects except to test CLAUDE.md
+  in a clean-slate scenario.
 
 Three published artifacts:
 
@@ -101,11 +159,13 @@ section.
 ## 3. Repository and file layout
 
 - `/srdom.html` - the document. ~2.85 MB, ~50k lines.
-- `/srdom.py` - the Python library. Single file, currently ~55 KB.
-- `/srdom.nu` - the Nushell wrapper. Single file, currently ~9 KB.
+- `/srdom.py` - the Python library. Single file, ~62 KB in v0.4.0.
+- `/srdom.nu` - the Nushell wrapper. Single file, ~8 KB in v0.3.0.
 - `/_headers` - Cloudflare Pages content-type overrides.
 - `/CLAUDE.md` - this file.
-- `/DOM-Contract.md` - the formal data-model spec, work in progress.
+- `/DOM-Contract.md` - the format-spec contract (DOMMF + DOMQF grammar).
+- `/srdom.dommf` - the SRDOM-specific data model instance, expressed in DOMMF.
+- `/srdom.domqf` - the SRDOM-specific query interface instance, expressed in DOMQF (WIP).
 - (Maybe later: separate files for examples, tests, etc.)
 
 The published URLs are:
@@ -190,8 +250,17 @@ Standard cycle:
 6. **Wait for Roy.** He reviews, may ask for iterations, eventually says
    the magic word (some variant of "proceed," "looks good," "commit,"
    or just "yes").
-7. Roy commits to the `www` branch (or `draft` for staging). Cloudflare
-   Pages auto-deploys.
+7. Roy commits to `draft/roylaurie`. Project files (srdom.html /
+   srdom.py / srdom.nu) all go there. CLAUDE.md goes to the orphan
+   `ai` branch instead.
+8. When Roy cuts a version, he rebases `draft/roylaurie` as he sees
+   fit and fast-forward merges into `main`.
+9. When Roy publishes, he uses `git show` to manually copy the desired
+   files from `main` into the orphan `www` branch. Cloudflare Pages
+   auto-deploys from `www`.
+
+I never push or merge directly. My role is to produce verified
+working files in outputs; Roy controls everything in git.
 
 ### Version conventions
 
@@ -204,6 +273,17 @@ in build.
 When Roy confirms a draft is good to publish, I strip the `-draft`
 suffix as the final pre-publish step. The next iteration begins by
 bumping the version and re-appending `-draft`.
+
+**srdom.html has TWO version markers** that both need to be updated
+when bumping or cutting:
+
+```html
+<meta name="version" content="0.6.0">       <!-- machine-readable -->
+<dd id="project-version"><p>0.6.0</p></dd>  <!-- in the for-humans Version dt/dd -->
+```
+
+I missed the second one when cutting v0.6.0; Roy had to fix it manually.
+Always check both.
 
 Version bump policy is fuzzy. Major refactors warrant minor bumps
 (0.5 → 0.6); small fixes typically share a version with the prior
@@ -292,16 +372,38 @@ the transformation as adding structural overlay rather than restructuring.
 ### Python lib property names
 
 - Snake-case.
-- Full words, matching the CSS class semantically. After v0.6.0+, the
-  lib's `ac`/`hp`/`type`/`cr` get renamed to `armor_class`/`hit_points`/
-  `kind`/`challenge_rating` to track the HTML rename. This is in my
-  memory and should be done when the lib update happens.
+- Full words, matching the CSS class semantically. The pre-v0.6.0
+  shorthands (`ac`/`hp`/`type`/`cr`) are gone — the lib now uses
+  `armor_class` / `hit_points` / `kind` / `challenge_rating`.
 
 ### Document model identifiers (DOMMF/DOMQF)
 
 - Snake-case for type names and field names.
 - Slug-case for value content like slug fields.
-- The DOMMF section of DOM-Contract.md is the canonical spec.
+- DOM-Contract.md is the canonical format spec. The SRDOM-specific
+  model instance lives in `srdom.dommf` (and the query interface in
+  `srdom.domqf`, WIP).
+
+### DOMMF model-naming rule (prefix-when-generic)
+
+For sub-model names, prefix with the parent entity *only when the bare
+name would be ambiguous in isolation*. Roy's rule, in his words: "would
+the name be ambiguous if you read it standalone in a different file?"
+
+Prefixed (would be ambiguous bare):
+- `spell_components` — "components" of what?
+- `spell_effect` — "effect" of what?
+- `magic_item_rarity_tier` — "rarity_tier" alone is too generic
+
+Unprefixed (SRD-rulebook keywords, recognizable in isolation):
+- `trait`, `action`, `reaction`, `legendary_action` — characteristics
+  in the rulebook glossary
+- `special_rules` — descriptive enough on its own
+- `creature`, `spell`, `magic_item` — top-level entities
+
+The rule is informal and inconsistent in places (e.g., `trait` is
+unprefixed but `spell_effect` is prefixed even though both are
+rulebook-shaped). Roy considers it good-enough; revisit if it bites.
 
 
 ## 9. Subject vs topic markup
@@ -487,6 +589,64 @@ Roy sees via present_files. Always copy the final version to outputs
 before presenting; do not point present_files at the build directory
 directly (the user does not see it).
 
+### Content abstraction was removed in srdom.py v0.4.0
+
+The `--content {md,html}` flag, the `_html_fragment` helper, the html
+cache files, and the `dommf.Content` runtime wrapper class are all gone.
+The lib always emits markdown. Don't pass `--content md` from muscle
+memory — it errors. `load()` no longer takes a `content=` kwarg.
+
+### srdom.py v0.4.0+ is organized in four conceptual namespaces
+
+- `dommf` — conceptual only; no Python class. DOMMF data types map
+  directly to Python `str`/`int`/`bool`/dataclasses, so there's nothing
+  for a runtime namespace to hold. (Earlier prototypes had a `dommf`
+  class housing `Content` — that's gone.)
+- `domqf` — small XPath-helper namespace (`first_text`, `resolve_reference`).
+- `model` — pure dataclasses mirroring the DOMMF contract: `Creature`,
+  `Spell`, `MagicItem`, `Trait`, `Action`, `Reaction`, `LegendaryAction`,
+  `SpellComponents`, `SpellEffect`, `SpecialRules`, `MagicItemRarityTier`,
+  `Situation` enum.
+- `query` — runtime DOM-walking classes that produce model instances via
+  `to_model()` (typed) or plain dicts via `to_dict()` (the fast path the
+  CLI uses for JSON emission). Each scalar field uses a pre-compiled
+  XPath stored as a `_XP_*` class attribute. Pre-compilation is the
+  single biggest speed win over the naive impl (~100 ms saved on the
+  full creatures dump).
+
+The `.filter()` method on collections was dropped in v0.4.0 — use list
+comprehensions instead (`[c for c in doc.creatures if c.kind == "X"]`).
+
+### Cantrip = level 0 (per SRD), not optional
+
+SRD 5.2.1 verbatim: "A cantrip is a level 0 spell, which is cast without
+a spell slot." Spell lists are headed "Cantrips (Level 0 X Spells)". So
+`spell.level: u32` (range 0–9), NOT `option<u32>` with cantrip as none.
+
+The HTML doesn't carry a `<span class="spell-level">0</span>` for
+cantrips though — it has `<span class="spell-upgrade">Cantrip</span>`
+instead. The query layer normalizes "no spell-level span" to `0`, which
+is a query-side concern, not a model-side optionality.
+
+### In-sandbox subprocess timing is unreliable for benchmarking
+
+Subprocess-driven Python timings inside this sandbox showed a ~50% gap
+between srdom.py v0.3.0 and the v0.4.0 prototype (~334 ms vs ~497 ms).
+Roy's longer-iteration nu script on his machine (101 runs) showed the
+two versions within ~1% of each other (192 ms vs 194 ms). The sandbox
+gap is environmental — likely cold-cache and process-startup costs that
+amortize away with more iterations. Distrust subprocess wall-clock
+deltas inside this environment; defer perf claims to Roy's runs.
+
+### TODO test placeholder pattern
+
+The test suite uses `test_TODO_*` prefixes for tests that assert
+placeholder values for fields awaiting HTML markup work
+(`reaction.trigger`/`response` → `""`, `legendary_action.uses` → `0`,
+`legendary_action.situation_uses` → `{}`). They PASS today because the
+placeholders are correct. When the markup lands, they'll FAIL — which
+is the signal to update them to assert the real extracted values.
+
 
 ## 12. Common operations cheat sheet
 
@@ -563,21 +723,17 @@ These are items in flight that have not yet been written into the
 for-ai-agents section or otherwise made durable. Once they are done,
 remove them from here.
 
-- **srdom.py creature property renames (post v0.6.0 class rename).**
-  The HTML classes were renamed `creature-ac`/`hp`/`type`/`cr` to
-  `creature-armor-class`/`hit_points`/`kind`/`challenge_rating`. The
-  lib still uses the old short property names and the old XPaths. When
-  this is updated, rename properties AND XPaths together; do not leave
-  the lib using short names while querying long ones.
-- **srdom.nu surface check after the lib update.** The Nushell wrapper
-  does not directly reference class names, but it does expose lib
-  output records whose field names will change. Verify field names in
-  the output records after the lib update.
-- **DOM-Contract.md completion.** Roy is drafting the formal model
-  spec. DOMMF section is mostly done; DOMQF is in early shape. trait
-  and action types are referenced in the creature model but not yet
-  defined. Cardinality rules (singular type takes first, vec<T> takes
-  all) are inferred from DOMMF type but not yet written into the spec.
+- **DOM-Contract.md / srdom.dommf completion.** The DOM-Contract.md
+  document now holds only the format grammar (DOMMF + DOMQF prose). The
+  SRDOM-specific instance was factored into `srdom.dommf` (complete for
+  current entities: creature, spell, magic_item, and their sub-models)
+  and `srdom.domqf` (early WIP — only the creature `node` skeleton exists).
+  Remaining work is on the DOMQF side: drafting query definitions for
+  every DOMMF model.
+- **HTML markup for reaction trigger/response and legendary_action uses/
+  situation_uses.** The model and query layer are ready (with TODO test
+  placeholders); the HTML markup itself hasn't been added. Currently
+  the lib returns `""`, `0`, `{}` placeholders for these fields.
 - **Cell-merge defects in the damage glossary table.** Originally
   flagged during a survey; turned out to be a false positive from the
   survey script (text_content concatenation across cells). No fix
@@ -606,8 +762,11 @@ remove them from here.
   in-document operational handbook for parsing and rebuilding SRDOM.
   Read this if I need to understand the data model, query patterns,
   or normalization rules.
-- **`DOM-Contract.md`** - the formal DOMMF + DOMQF spec. Read this if
-  I am about to design or extend the data model.
+- **`DOM-Contract.md`** - the format-spec contract (DOMMF + DOMQF
+  grammar). Read this if I am about to design or extend the data-model
+  format itself. For the SRDOM-specific instance — what fields creature/
+  spell/magic_item actually have — read `srdom.dommf` (and `srdom.domqf`
+  for the query interface, WIP).
 - **The published lib (`srdom.py`)** - the reference parser. Read this
   if I am unsure how a particular field should be queried or what its
   expected shape is.
@@ -651,8 +810,9 @@ just provides a fast at-a-glance "is this current?"
 
 When I edit this file in a session, I leave it in
 `/home/claude/build/CLAUDE.md`, copy it to outputs, present it to Roy,
-and let him commit. The file does not auto-deploy or get included in
-the published site; it is repo-only.
+and let him commit. The file goes to the orphan `ai` branch in the
+repo (not the main tree, not `draft/roylaurie`, not `www`). It does
+not auto-deploy or get included in the published site; it is repo-only.
 
 
 ---
