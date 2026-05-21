@@ -242,9 +242,10 @@ Standard cycle:
    - File size delta is sensible (small renames produce small deltas;
      normalization passes produce larger ones).
 3. **Run the self-test** on the lib:
-   `python3 srdom.py --source ./srdom.html test`. This spot-checks
-   spell metadata, creature counts, magic item categories, and
-   markdown-vs-html description format.
+   `python3 srdom.py test` (auto-discovers `./srdom.html` in cwd; falls
+   back to script-dir, then OS cache, then DEFAULT_URL — see §11 below).
+   Spot-checks spell metadata, creature counts, magic item categories,
+   and markdown-vs-html description format.
 4. **Copy to outputs**: `cp` files into `/mnt/user-data/outputs/`.
 5. **Present** with present_files. Brief summary of what changed.
 6. **Wait for Roy.** He reviews, may ask for iterations, eventually says
@@ -658,7 +659,30 @@ placeholder values for fields awaiting HTML markup work
 placeholders are correct. When the markup lands, they'll FAIL — which
 is the signal to update them to assert the real extracted values.
 
-### Magic item variance markup (srdom.html v0.7.0+)
+### Source resolution and cache mirroring (srdom.py v0.5.0+)
+
+`srdom.load(source=...)` / the CLI `--source` flag resolves in this
+order:
+
+1. Explicit `--source <X>` — file, URL, or `"refresh"`
+2. `./srdom.html` (current working directory)
+3. `<script-dir>/srdom.html` (directory containing `srdom.py`)
+4. OS cache if fresh (`~/Library/Caches/srdom/` on macOS,
+   `~/.cache/srdom/` on Linux, etc.)
+5. Fetch `DEFAULT_URL`
+
+Whenever a non-cache path produces HTML bytes (steps 1, 2, 3, 5), those
+bytes are mirrored into the OS cache and any matching JSON cache files
+(`srdom_v<version>_spells.json`, etc.) are deleted. The cache is just a
+mirror of "the last source we resolved against," so editing your local
+srdom.html and re-running automatically invalidates derived JSON. No
+manual `rm -rf ~/.cache/srdom/` needed for iteration.
+
+Practical consequence: when iterating in `/home/claude/build/`, just
+run `python3 srdom.py <cmd>` — no `--source` flag. The lib finds the
+local file, mirrors it, and stays in sync.
+
+
 
 *Candidate for future for-ai-agents documentation; regenerative.*
 
@@ -693,24 +717,37 @@ Markup pattern:
 
 *Candidate for future for-ai-agents documentation; regenerative.*
 
-Some magic items have source IDs/headings that diverge from their canonical
-singular form. These get `data-exceptional="<token>"` on the section.
+`data-exceptional` flags markup that deviates from a default rule and
+needs explicit handling. Vocabulary is space-separated tokens.
 
-Current vocabulary: **`singularized`** — applied when the source uses a
-plural form (e.g., "Potions of Healing") but the canonical magic item is
-singular ("Potion of Healing").
+Current tokens:
 
-The `singularized` pattern:
-- Section id uses the canonical singular form (`magic-item-potion-of-healing`).
-- The h4 carries `<span class="magic-item-alias">` — preserves the source
-  display text (e.g., "Potions of Healing").
-- Sibling to the h4: `<template class="magic-item-name">` — carries the
-  canonical name ("Potion of Healing").
-- The library's `_XP_NAME` reads either span or template via
-  `.//*[@class="magic-item-name"]` — works uniformly across exceptional
-  and normal items.
+- **`singularized`** — applied to `<section class="magic-item">` when
+  the source uses a plural form (e.g., "Potions of Healing") but the
+  canonical magic item is singular ("Potion of Healing"). The
+  `singularized` pattern:
+  - Section id uses the canonical singular form
+    (`magic-item-potion-of-healing`).
+  - The h4 carries `<span class="magic-item-alias">` — preserves the
+    source display text (e.g., "Potions of Healing").
+  - Sibling to the h4: `<template class="magic-item-name">` — carries
+    the canonical name ("Potion of Healing").
+  - The library's `_XP_NAME` reads either span or template via
+    `.//*[@class="magic-item-name"]` — works uniformly across
+    exceptional and normal items.
 
-Multiple exceptional tokens space-separated; not yet exercised.
+- **`reslug`** — applied to a `<dt>` inside `magic-item-special` (and
+  by extension any place where slugs are derived) when the natural
+  slug derivation would produce a wrong or colliding value. Carries a
+  paired `data-slug="<value>"` attribute holding the manual slug. The
+  library's `SpecialRules.slug` reads `data-slug` when `reslug` is
+  present, bypassing the normal `_slugify(heading)` path.
+
+  Used in `hammer-of-thunderbolts` where the SRD has both an umbrella
+  rule "Giant's Bane" and a same-slugging sub-rule "Giants' Bane"
+  (singular vs plural possessive — both strip to `giants-bane`). The
+  umbrella reslugs to `giants-bane-rule`; the sub-rule reslugs
+  redundantly to `giants-bane` to document the disambiguation pair.
 
 ### Special_rules use `dl/dt/dd` uniformly
 
@@ -748,19 +785,53 @@ present, so the slug is joinable with `variant.slug` across the two
 lists. Without a variant-name span, the slug derives from the full dt
 text.
 
+### Subject paragraphs: variants vs. rules
+
+*Candidate for future for-ai-agents documentation; regenerative.*
+
+`<span class="subject">` inside a description `<p>` plays two roles
+depending on context:
+
+- **Variant marker** — if the section contains any
+  `<span class="magic-item-variant-name">`, every subject paragraph in
+  the description is variant prose. The variant-name span is nested
+  inside the subject span; the rest of the paragraph is the variant's
+  description. Examples: ioun-stone (14 variants), feather-token (6),
+  potion-of-giant-strength (in-table variants — no subjects here).
+
+- **Named sub-rule** — if the section has NO variant-name spans
+  anywhere, every subject paragraph names a sub-rule of the (singular)
+  magic item. These promote to `<dl><dt>name</dt><dd>body</dd></dl>`
+  inside `<section class="magic-item-special">`. Examples:
+  wand-of-polymorph (`Regaining Charges`), belt-of-dwarvenkind (5
+  property sub-rules), armor-of-invulnerability (`Metal Shell`),
+  curse-bearing items (`Curse`).
+
+The heuristic is exactly: **subjects are variants iff the section has
+variant markup; otherwise they're rules to promote.** Used in the
+srdom.html v0.7.0-draft pass that swept 54 items / ~116 subject-rule
+promotions.
+
 ### Slug-build rule
 
 *Candidate for future for-ai-agents documentation; regenerative.*
 
 The library exposes two slug helpers:
-- `_slugify(text)`: lowercase, non-alphanumeric → `-`, collapse runs,
-  trim. `"+1"` → `"1"`; `"frost or stone"` → `"frost-or-stone"`.
+- `_slugify(text)`: strip apostrophes (both `'` and `\u2019`), lowercase,
+  non-alphanumeric → `-`, collapse runs, trim. `"+1"` → `"1"`;
+  `"frost or stone"` → `"frost-or-stone"`; `"Giant's Bane"` →
+  `"giants-bane"` (apostrophe stripped, not replaced — so possessives
+  collapse cleanly).
 - `_slug_build(*parts)`: slugify each, join with `-`, collapse runs,
   trim. Used for compound slugs when needed.
 
 `variant.slug` and `special_rules.slug` are always **local tails** — no
 DOM-id prefix. Compound slugs (for DOM-id construction) are caller's
 responsibility via `_slug_build`.
+
+When two same-slugging headings actually need distinct slugs, use
+`data-exceptional="reslug"` with a paired `data-slug` attribute (see
+above).
 
 
 ## 12. Common operations cheat sheet
@@ -817,8 +888,12 @@ Expected: 0 dupes, 0 broken, 339 spells, 336 creatures, 257 magic items
 ### Run the lib self-test
 
 ```bash
-python3 srdom.py --source ./srdom.html test 2>&1 | tail -20
+python3 srdom.py test 2>&1 | tail -20
 ```
+
+The lib auto-discovers `./srdom.html` (cwd) or `<script-dir>/srdom.html`
+before falling back to the OS cache, so when iterating in
+`/home/claude/build/` no `--source` flag is needed.
 
 ### Substring-safe class rename
 
