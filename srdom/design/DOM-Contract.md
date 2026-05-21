@@ -41,6 +41,15 @@ token as a name that encapsulates a set of uniquely identified variants between
 the `{` and `}` characters. Each variant is separated by a `,` character.  
 The `enum` keyword begins its definition.
 
+A `Union Type` is an enumeration type whose variants may carry associated
+types. It consists of a unique identity token as a name that encapsulates
+a set of uniquely identified variants between the `{` and `}` characters.
+Each variant is separated by a `,` character. A variant may carry zero or
+more associated types, specified between `(` and `)` and separated by a
+`,` character. Fieldless and associated-typed variants may be freely mixed
+within one union. A variant's associated types are referred to numerically
+by position in the order they are defined, zero-indexed.  
+The `union` keyword begins its definition.
 
 `Data Type`s are enumerated:
 - `string` :: UTF-8 
@@ -54,6 +63,16 @@ The `enum` keyword begins its definition.
 - `option<type>` :: An optional type enumerated as:
   - `none` :: no value (null)
   - `some<type>` :: some value, containing *type*
+- `fuzz<type>` :: An enumeration that either represents a strict type or a fuzzy *string(md)* description
+  - `hard<type>` :: Fixed data representation
+  - `soft<string(md)>` :: Prose representation
+- `logic<T>` :: A logical expression tree over leaf type T
+  - `is<T>`            :: A single leaf value
+  - `in<vec<T>>`       :: Set membership; equivalent to or<vec<is<T>>>. Empty vec is false.
+  - `not_in<vec<T>>`   :: Set non-membership; equivalent to not<in<vec<T>>>. Empty vec is true.
+  - `not<logic<T>>`    :: Negation
+  - `and<vec<logic<T>>>` :: Conjunction; empty vec is true
+  - `or<vec<logic<T>>>`  :: Disjunction; empty vec is false
 
 A `String Format` is a set of rules that a string must adhere to.
 

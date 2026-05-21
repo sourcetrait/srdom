@@ -103,28 +103,114 @@ model spell_effect {
     constraints: vec<string>,
 }
 
+enum rarity {
+    common,
+    uncommon,
+    rare,
+    very_rare,
+    legendary,
+    artifact,
+}
+
 model magic_item {
     slug: string(slug),
-    title: string,
     name: string,
-    variants: vec<string>,
     category: string,
     category_description: option<string>,
-    rarities: vec<string>,
-    rarity_tiers: vec<magic_item_rarity_tier>,
-    attunement: option<string>,
+    rarity: option<rarity>, // some: singular or acts as a default variant
+    variants: vec<magic_item_variant>,
+    attunement: option<fuzz<logic<attunement_requirement>>>,
     description: string(md),
     special_rules: vec<special_rules>,
     creature: option<creature>,
+    charges: option<unum>,
 }
 
-model magic_item_rarity_tier {
-    rarity: string,
-    variant: option<string>,
+model magic_item_variant {
+    slug: string(slug),
+    name: string,
+    rarity: option<rarity>,
+    description: option<string(md)>,
+    charges: option<unum>,
 }
 
 model special_rules {
     slug: string(slug),
     heading: string,
     content: string(md),
+}
+
+// as float: floor()
+union inum {
+    fixed(i32),
+    rolled(roll),
+}
+
+// clamped to 0. as float: floor()
+union unum {
+    fixed(u32),
+    rolled(roll),
+}
+
+// hardcoded
+enum srd_class {
+    barbarian,
+    bard,
+    cleric,
+    druid,
+    fighter,
+    monk,
+    paladin,
+    ranger,
+    rogue,
+    sorcerer,
+    warlock,
+    wizard,
+}
+
+enum capability {
+    spellcaster,
+}
+
+// hardcoded
+enum srd_lineage {
+    dwarf,
+}
+
+union attunement_requirement {
+    any,
+    attuned_to(string(slug)),
+    capability(capability),
+    class(srd_class),
+    lineage(srd_lineage),
+}
+
+enum dice {
+    d3,
+    d4,
+    d6,
+    d8,
+    d10,
+    d12,
+    d20,
+    d100,
+}
+
+enum op {
+    add,
+    subtract,
+    multiply,
+    divide,
+}
+
+//typical format: {n}{d} [{op} {modifier}] 
+model roll {
+    n: u32,
+    d: dice,
+    modifier: option<roll_modifier>,
+}
+
+model roll_modifier {
+    op: op,
+    value: u32,
 }
