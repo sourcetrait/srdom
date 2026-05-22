@@ -5,7 +5,6 @@ model creature {
     kind: string,
     alignment: string,
     armor_class: string,
-    initiative: string,
     hit_points: string,
     speed: string,
     strength: u32,
@@ -26,6 +25,9 @@ model creature {
     charisma: u32,
     charisma_modifier: i32,
     charisma_save: i32,
+    initiative_modifier: option<i32>, // none: review the creature / caster description 
+    passive_perception: u32,
+    passive_initiative: option<u32>,
     skills: string,
     senses: string,
     languages: string,
