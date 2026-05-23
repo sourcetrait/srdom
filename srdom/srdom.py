@@ -244,12 +244,46 @@ def _fetch_and_cache(url: str) -> Tuple[Path, str]:
 # ============================================================================
 
 
-def _md_inline(element: _Element) -> str:
-    """Convert an element's children to inline Markdown (em, strong, code, etc.)."""
+# Structural labels promoted to Markdown headings. A sub-feature label
+# (subject) and a definition term (dt) both sit just under a glossary term's
+# h4, so they take nominal level 4; real h1-h6 keep their tag level. The whole
+# md string is then shifted so its shallowest heading becomes '#' (see
+# _normalize_headings) — Markdown is our own styling layer, so heading depth is
+# normalized per string rather than mirrored from source tag numbers.
+_SUBJECT_LEVEL = 4
+_DT_LEVEL = 4
+_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+
+def _is_leading_subject(node: _Element) -> bool:
+    """True if node is a subject label at the very start of its <p> (nothing
+    before it), so it can be promoted to a block-level heading."""
+    if node.tag != "span" or node.get("class") != "subject":
+        return False
+    p = node.getparent()
+    if p is None or p.tag != "p":
+        return False
+    return len(p) > 0 and p[0] is node and not (p.text or "").strip()
+
+
+def _heading(level: int, text: str) -> str:
+    return ("#" * max(1, level)) + " " + text
+
+
+def _md_inline(element: _Element, _skip_leading_subject: bool = False) -> str:
+    """Convert an element's children to inline Markdown (em, strong, code,
+    spans, etc.). With _skip_leading_subject, the first child (a leading subject
+    span the caller promotes to a heading) is dropped but its tail is kept."""
     out: List[str] = []
-    if element.text:
+    children = list(element)
+    if _skip_leading_subject and children:
+        first = children[0]
+        if first.tail:
+            out.append(first.tail)
+        children = children[1:]
+    elif element.text:
         out.append(element.text)
-    for child in element:
+    for child in children:
         tag = child.tag
         inner = _md_inline(child)
         if tag == "em" or tag == "i":
@@ -263,8 +297,13 @@ def _md_inline(element: _Element) -> str:
         elif tag == "a":
             href = child.get("href", "")
             out.append(f"[{inner}]({href})" if href else inner)
+        elif tag == "span" and child.get("class") in ("subject", "topic"):
+            # A mid-paragraph subject (the rare case; leading subjects are
+            # promoted to headings by _md_block) and a topic highlight both
+            # render as bold inline emphasis.
+            out.append(f"**{inner}**")
         else:
-            # Transparent passthrough for span and other unknown inline tags
+            # Transparent passthrough for other spans / unknown inline tags
             out.append(inner)
         if child.tail:
             out.append(child.tail)
@@ -300,10 +339,29 @@ def _md_table(element: _Element) -> str:
 
 
 def _md_block(element: _Element) -> str:
-    """Convert a block-level element to Markdown."""
+    """Convert a block-level element to Markdown. Headings (h1-h6, leading
+    subject labels, dt terms) are emitted at their nominal level; the field-level
+    entry points (_md_children/_md_content) shift the whole string afterwards."""
     tag = element.tag
     if tag == "p":
+        first = element[0] if len(element) else None
+        if first is not None and _is_leading_subject(first):
+            head = _heading(_SUBJECT_LEVEL, first.text_content().strip())
+            rest = _md_inline(element, _skip_leading_subject=True).strip()
+            return f"{head}\n\n{rest}" if rest else head
         return _md_inline(element).strip()
+    if tag in _HEADING_TAGS:
+        return _heading(int(tag[1]), _md_inline(element).strip())
+    if tag == "dl":
+        parts = []
+        for child in element:
+            if child.tag == "dt":
+                parts.append(_heading(_DT_LEVEL, _md_inline(child).strip()))
+            elif child.tag == "dd":
+                body = _md_content_join(child)
+                if body:
+                    parts.append(body)
+        return "\n\n".join(parts)
     if tag == "ul":
         items = [f"- {_md_inline(li).strip()}" for li in element.findall("li")]
         return "\n".join(items)
@@ -317,13 +375,31 @@ def _md_block(element: _Element) -> str:
         return _md_table(element)
     if tag in ("div", "section"):
         # Container: recurse into children as block-level
-        return _md_children(element)
+        return _md_join(element)
     # Fallback: take text content
     return element.text_content().strip()
 
 
-def _md_children(element: _Element) -> str:
-    """Convert all block-level children of an element to Markdown."""
+def _normalize_headings(md: str) -> str:
+    """Shift all ATX headings so the shallowest present becomes '#', preserving
+    relative depth. Operates on a complete md string (one field value)."""
+    levels = [len(m.group(1)) for m in re.finditer(r"(?m)^(#{1,6}) \S", md)]
+    if not levels:
+        return md
+    shift = min(levels) - 1
+    if shift <= 0:
+        return md
+    return re.sub(
+        r"(?m)^(#{1,6})( )",
+        lambda m: "#" * (len(m.group(1)) - shift) + m.group(2),
+        md,
+    )
+
+
+def _md_join(element: _Element) -> str:
+    """Join all block-level children to Markdown (no heading normalization).
+    Internal helper for nested containers; callers wanting a field value use
+    _md_children."""
     parts = []
     for child in element:
         rendered = _md_block(child)
@@ -332,10 +408,10 @@ def _md_children(element: _Element) -> str:
     return "\n\n".join(parts).strip()
 
 
-def _md_content(element: _Element) -> str:
-    """Render an element's full content as Markdown — including the element's
-    leading .text (before the first child) and all block children. Use for
-    elements like <dd> that may carry text-only content or mixed text+children."""
+def _md_content_join(element: _Element) -> str:
+    """Like _md_join but also includes the element's own leading .text (before
+    the first child). For <dd> and similar mixed text+children elements. No
+    heading normalization."""
     parts = []
     if element.text and element.text.strip():
         parts.append(element.text.strip())
@@ -344,6 +420,18 @@ def _md_content(element: _Element) -> str:
         if rendered:
             parts.append(rendered)
     return "\n\n".join(parts).strip()
+
+
+def _md_children(element: _Element) -> str:
+    """Field-level Markdown for all block children of an element, with headings
+    normalized so the shallowest becomes '#'."""
+    return _normalize_headings(_md_join(element))
+
+
+def _md_content(element: _Element) -> str:
+    """Field-level Markdown including the element's leading text, with headings
+    normalized. Use for elements like <dd> that carry mixed text+children."""
+    return _normalize_headings(_md_content_join(element))
 
 
 def _slugify(text: str) -> str:
@@ -1238,7 +1326,7 @@ class query:
         @property
         def description(self) -> str:
             parts = [_md_block(c) for c in self._XP_BODY(self._element)]
-            return "\n\n".join(p for p in parts if p).strip()
+            return _normalize_headings("\n\n".join(p for p in parts if p).strip())
 
         def to_model(self) -> "model.Term":
             return model.Term(slug=self.slug, name=self.name, description=self.description)
@@ -2644,6 +2732,58 @@ class tests:
         assert isinstance(m, model.Term)
         assert m.slug == "initiative" and m.name == "Initiative", (m.slug, m.name)
         assert "Initiative" in m.description
+
+    # ---- Markdown conversion: headings, emphasis, lists, tables ----
+
+    @staticmethod
+    def test_md_subject_becomes_heading(doc):
+        # subject -> heading; the stylized trailing period is stripped in the HTML
+        d = doc.terms["unarmed-strike"].description
+        for label in ("# Damage\n", "# Grapple\n", "# Shove\n"):
+            assert label in d, f"missing heading {label!r}"
+        assert "# Damage." not in d  # period was yanked
+
+    @staticmethod
+    def test_md_caption_nests_under_subject(doc):
+        # subject -> '#', the table-caption h5 under it -> '##'
+        d = doc.terms["breaking-objects"].description
+        assert "# Armor Class\n" in d
+        assert "## Object Armor Class" in d
+        assert "| AC | Substance | AC | Substance |" in d  # table intact
+
+    @staticmethod
+    def test_md_table_caption_heading(doc):
+        # only heading is the h6 caption -> normalizes to '#'
+        d = doc.terms["damage-types"].description
+        assert "# Damage Types" in d
+        assert "| Type | Examples |" in d
+
+    @staticmethod
+    def test_md_list_preserved_with_subject(doc):
+        d = doc.terms["long-rest"].description
+        assert "# Interrupting the Rest\n" in d
+        assert "- Rolling Initiative" in d  # ul intact
+
+    @staticmethod
+    def test_md_nested_dl_dt_heading(doc):
+        m = doc.magic_items["figurine-of-wondrous-power"]
+        goats = [v for v in m.variants if v["name"] == "Ivory Goats"][0]
+        assert "# Goat of Terror" in goats["description"]
+
+    @staticmethod
+    def test_md_topic_is_bold(doc):
+        frag = _lhtml.fragment_fromstring(
+            '<p><span class="topic">Aberrations</span> are utterly alien beings.</p>'
+        )
+        assert _md_block(frag) == "**Aberrations** are utterly alien beings."
+
+    @staticmethod
+    def test_md_heading_normalization_shifts_to_h1(doc):
+        # shallowest heading (####) becomes '#', relative depth preserved
+        s = "#### Top\n\nbody\n\n##### Sub"
+        assert _normalize_headings(s) == "# Top\n\nbody\n\n## Sub"
+        # no headings -> unchanged
+        assert _normalize_headings("just prose") == "just prose"
 
     @staticmethod
     def test_spell_count(doc):
