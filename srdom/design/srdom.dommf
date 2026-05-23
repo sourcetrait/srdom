@@ -216,3 +216,9 @@ model roll_modifier {
     op: op,
     value: u32,
 }
+
+model term {
+    slug: string(slug),
+    name: string,
+    description: string(md),
+}

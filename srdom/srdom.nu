@@ -120,6 +120,17 @@ export def "srdom creatures" [
     _run (_build_args "creatures" --source $source) | from json
 }
 
+# Emit all glossary terms as a Nushell table.
+#
+# Examples:
+#     srdom terms | where ($it.name | str contains "[Condition]")
+#     srdom terms | get name
+export def "srdom terms" [
+    --source (-s): string
+] {
+    _run (_build_args "terms" --source $source) | from json
+}
+
 # Emit one spell as a Nushell record.
 #
 # Examples:
@@ -142,6 +153,18 @@ export def "srdom creature" [
     --source (-s): string
 ] {
     _run (_build_args "creature" --source $source --slug $slug) | from json
+}
+
+# Emit one glossary term as a Nushell record.
+#
+# Examples:
+#     srdom term initiative
+#     srdom term initiative | get description
+export def "srdom term" [
+    slug: string             # the term slug (e.g., "initiative", "blinded-condition")
+    --source (-s): string
+] {
+    _run (_build_args "term" --source $source --slug $slug) | from json
 }
 
 # Emit all magic items as a Nushell table.
@@ -234,8 +257,8 @@ export def "srdom test" [
 # Dispatches to the same helpers as the exported `srdom <noun>` commands so
 # both invocation paths share one code path.
 def main [
-    command?: string   # spells | creatures | magic-items | spell | creature | magic-item | test
-    slug?: string      # required for `spell`, `creature`, `magic-item`
+    command?: string   # spells | creatures | magic-items | terms | spell | creature | magic-item | term | test
+    slug?: string      # required for `spell`, `creature`, `magic-item`, `term`
     --source (-s): string
 ] {
     if $command == null {
@@ -248,20 +271,22 @@ def main [
         print "  spell <slug>         Emit one spell as JSON"
         print "  creature <slug>      Emit one creature as JSON"
         print "  magic-item <slug>    Emit one magic item as JSON"
+        print "  terms                Emit all glossary terms as JSON"
+        print "  term <slug>          Emit one glossary term as JSON"
         print "  test                 Run library self-test (text output)"
         print ""
         print "See header comment for module-import alternative."
         return
     }
 
-    if $command in ["spell" "creature" "magic-item"] and $slug == null {
+    if $command in ["spell" "creature" "magic-item" "term"] and $slug == null {
         print -e $"Error: '($command)' requires a slug argument"
         exit 1
     }
 
-    let args = if $command in ["spells" "creatures" "magic-items" "test"] {
+    let args = if $command in ["spells" "creatures" "magic-items" "terms" "test"] {
         _build_args $command --source $source
-    } else if $command in ["spell" "creature" "magic-item"] {
+    } else if $command in ["spell" "creature" "magic-item" "term"] {
         _build_args $command --source $source --slug $slug
     } else {
         print -e $"Error: unknown command '($command)'"

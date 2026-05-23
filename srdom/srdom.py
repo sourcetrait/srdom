@@ -138,7 +138,7 @@ def _is_cache_fresh(path: Path) -> bool:
     return age <= TTL_SECONDS
 
 
-_JSON_CACHE_ENTITIES = ("spells", "creatures", "magic_items")
+_JSON_CACHE_ENTITIES = ("spells", "creatures", "magic_items", "terms")
 
 
 def _invalidate_json_caches(version: str) -> None:
@@ -544,6 +544,12 @@ class model:
         effects: list = field(default_factory=list)
         special_rules: list = field(default_factory=list)
         creature: Optional["model.Creature"] = None
+
+    @dataclass
+    class Term:
+        slug: str
+        name: str
+        description: str
 
     class Rarity(str, Enum):
         """SRD 5.2.1 magic item rarity tiers in canonical order."""
@@ -1211,6 +1217,37 @@ class query:
 
         def __repr__(self) -> str:
             return f"<query.Creature {self.slug!r}: {self.size} {self.kind}>"
+
+    class Term:
+        """A glossary term (section.glossary-term)."""
+        _XP_NAME = _letree.XPath('./h4/text()')
+        _XP_BODY = _letree.XPath('./*[not(self::h4)]')
+
+        def __init__(self, element: _Element):
+            self._element = element
+
+        @property
+        def slug(self) -> str:
+            return self._element.get("id", "").removeprefix("glossary-")
+
+        @property
+        def name(self) -> str:
+            r = self._XP_NAME(self._element)
+            return r[0].strip() if r else ""
+
+        @property
+        def description(self) -> str:
+            parts = [_md_block(c) for c in self._XP_BODY(self._element)]
+            return "\n\n".join(p for p in parts if p).strip()
+
+        def to_model(self) -> "model.Term":
+            return model.Term(slug=self.slug, name=self.name, description=self.description)
+
+        def to_dict(self) -> dict:
+            return {"slug": self.slug, "name": self.name, "description": self.description}
+
+        def __repr__(self) -> str:
+            return f"<query.Term {self.slug!r}>"
 
 
     class SpellEffect(_Characteristic):
@@ -2179,6 +2216,7 @@ class Document:
         self._spells = SpellCollection(tree)
         self._creatures = CreatureCollection(tree)
         self._magic_items = MagicItemCollection(tree)
+        self._terms = TermCollection(tree)
 
     def _read_version_from_tree(self) -> Optional[str]:
         result = self._tree.xpath('//meta[@name="version"]/@content')
@@ -2197,6 +2235,10 @@ class Document:
         return self._magic_items
 
     @property
+    def terms(self) -> "TermCollection":
+        return self._terms
+
+    @property
     def version(self) -> Optional[str]:
         return self._version
 
@@ -2204,7 +2246,7 @@ class Document:
         return (
             f"<Document version={self._version!r} "
             f"spells={len(self._spells)} creatures={len(self._creatures)} "
-            f"magic_items={len(self._magic_items)}>"
+            f"magic_items={len(self._magic_items)} terms={len(self._terms)}>"
         )
 
 
@@ -2253,10 +2295,17 @@ class MagicItemCollection(_BaseCollection):
     _id_prefix = "magic-item-"
 
 
+class TermCollection(_BaseCollection):
+    """All glossary terms. Indexable by slug, iterable. Returns query.Term."""
+    _section_class = "glossary-term"
+    _id_prefix = "glossary-"
+
+
 # Resolve forward references for collection entity types
 SpellCollection._entity_class = query.Spell
 CreatureCollection._entity_class = query.Creature
 MagicItemCollection._entity_class = query.MagicItem
+TermCollection._entity_class = query.Term
 
 
 
@@ -2291,6 +2340,8 @@ def _read_or_build_json_cache(version: str, entity_type: str, doc: "Document") -
         data = [c.to_dict() for c in doc.creatures]
     elif entity_type == "magic_items":
         data = [m.to_dict() for m in doc.magic_items]
+    elif entity_type == "terms":
+        data = [t.to_dict() for t in doc.terms]
     else:
         raise ValueError(f"Unknown entity_type: {entity_type!r}")
     _ensure_cache_dir()
@@ -2315,6 +2366,8 @@ def _cmd_entity(args, entity_type: str) -> int:
         collection, singular = doc.creatures, "creature"
     elif entity_type == "magic_items":
         collection, singular = doc.magic_items, "magic-item"
+    elif entity_type == "terms":
+        collection, singular = doc.terms, "term"
     else:
         raise ValueError(f"Unknown entity_type: {entity_type!r}")
     if args.slug not in collection:
@@ -2349,12 +2402,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("spells", help="Emit all spells as JSON.")
     sub.add_parser("creatures", help="Emit all creatures as JSON.")
     sub.add_parser("magic-items", help="Emit all magic items as JSON.")
+    sub.add_parser("terms", help="Emit all glossary terms as JSON.")
     sp = sub.add_parser("spell", help="Emit one spell as JSON.")
     sp.add_argument("slug")
     sc = sub.add_parser("creature", help="Emit one creature as JSON.")
     sc.add_argument("slug")
     sm = sub.add_parser("magic-item", help="Emit one magic item as JSON.")
     sm.add_argument("slug")
+    st = sub.add_parser("term", help="Emit one glossary term as JSON.")
+    st.add_argument("slug")
     sub.add_parser("test", help="Run a self-test against the resolved source.")
     return p
 
@@ -2364,9 +2420,11 @@ def main(argv=None) -> int:
     if args.command == "spells":      return _cmd_collection(args, "spells")
     if args.command == "creatures":   return _cmd_collection(args, "creatures")
     if args.command == "magic-items": return _cmd_collection(args, "magic_items")
+    if args.command == "terms":       return _cmd_collection(args, "terms")
     if args.command == "spell":       return _cmd_entity(args, "spells")
     if args.command == "creature":    return _cmd_entity(args, "creatures")
     if args.command == "magic-item":  return _cmd_entity(args, "magic_items")
+    if args.command == "term":        return _cmd_entity(args, "terms")
     if args.command == "test":        return _cmd_test(args)
     return 2
 
@@ -2386,7 +2444,8 @@ class tests:
         print(f"  Version: {doc.version}")
         print(f"  Spells:      {len(doc.spells)}")
         print(f"  Creatures:   {len(doc.creatures)}")
-        print(f"  Magic items: {len(doc.magic_items)}\n")
+        print(f"  Magic items: {len(doc.magic_items)}")
+        print(f"  Terms:       {len(doc.terms)}\n")
 
         names = sorted(n for n in dir(tests) if n.startswith("test_"))
         failed = 0
@@ -2561,6 +2620,30 @@ class tests:
         )
 
     # ---- Spell tests ----
+
+    @staticmethod
+    def test_term_count(doc):
+        assert len(doc.terms) == 155, f"expected 155 terms, got {len(doc.terms)}"
+
+    @staticmethod
+    def test_term_plain(doc):
+        t = doc.terms["ability-check"]
+        assert t.slug == "ability-check", f"slug {t.slug!r}"
+        assert t.name == "Ability Check", f"name {t.name!r}"
+        assert "ability check is a D20 Test" in t.description, t.description[:80]
+
+    @staticmethod
+    def test_term_tagged_name_preserved(doc):
+        # the bracketed family tag is kept in the name (Roy's call)
+        t = doc.terms["blinded-condition"]
+        assert t.name == "Blinded [Condition]", f"name {t.name!r}"
+
+    @staticmethod
+    def test_term_to_model(doc):
+        m = doc.terms["initiative"].to_model()
+        assert isinstance(m, model.Term)
+        assert m.slug == "initiative" and m.name == "Initiative", (m.slug, m.name)
+        assert "Initiative" in m.description
 
     @staticmethod
     def test_spell_count(doc):
