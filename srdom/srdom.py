@@ -476,7 +476,6 @@ class model:
         kind: str
         alignment: str
         armor_class: str
-        initiative: str
         hit_points: str
         speed: str
         strength: int
@@ -497,6 +496,9 @@ class model:
         charisma: int
         charisma_modifier: int
         charisma_save: int
+        initiative_modifier: Optional[int]
+        passive_perception: int
+        passive_initiative: Optional[int]
         skills: str
         senses: str
         languages: str
@@ -898,7 +900,9 @@ class query:
         _XP_KIND = _letree.XPath('.//span[@class="creature-kind"]/text()')
         _XP_ALIGN = _letree.XPath('.//span[@class="creature-alignment"]/text()')
         _XP_AC = _letree.XPath('.//td[@class="creature-armor-class"]/text()')
-        _XP_INIT = _letree.XPath('.//td[@class="creature-initiative"]/text()')
+        _XP_INIT_MOD = _letree.XPath('.//span[@class="creature-initiative-modifier"]/text()')
+        _XP_PASSIVE_INIT = _letree.XPath('.//span[@class="creature-passive-initiative"]')
+        _XP_PASSIVE_PERC = _letree.XPath('.//span[@class="creature-passive-perception"]/text()')
         _XP_HP = _letree.XPath('.//td[@class="creature-hit-points"]/text()')
         _XP_SPEED = _letree.XPath('.//td[@class="creature-speed"]/text()')
         _XP_SKILLS = _letree.XPath('.//td[@class="creature-skills"]/text()')
@@ -955,8 +959,25 @@ class query:
             r = self._XP_AC(self._element); return r[0].strip() if r else ""
 
         @property
-        def initiative(self) -> str:
-            r = self._XP_INIT(self._element); return r[0].strip() if r else ""
+        def initiative_modifier(self) -> Optional[int]:
+            r = self._XP_INIT_MOD(self._element)
+            return int(r[0]) if r else None
+
+        @property
+        def passive_perception(self) -> int:
+            r = self._XP_PASSIVE_PERC(self._element)
+            return int(r[0]) if r else 0
+
+        @property
+        def passive_initiative(self) -> Optional[int]:
+            els = self._XP_PASSIVE_INIT(self._element)
+            if not els:
+                return None
+            el = els[0]
+            # data-exceptional="erratum": trust data-fix over the preserved (erroneous) source text
+            if "erratum" in (el.get("data-exceptional") or "").split() and el.get("data-fix") is not None:
+                return int(el.get("data-fix"))
+            return int((el.text or "").strip())
 
         @property
         def hit_points(self) -> str:
@@ -1111,7 +1132,6 @@ class query:
                 kind=self.kind,
                 alignment=self.alignment,
                 armor_class=self.armor_class,
-                initiative=self.initiative,
                 hit_points=self.hit_points,
                 speed=self.speed,
                 strength=self.strength,
@@ -1132,6 +1152,9 @@ class query:
                 charisma=self.charisma,
                 charisma_modifier=self.charisma_modifier,
                 charisma_save=self.charisma_save,
+                initiative_modifier=self.initiative_modifier,
+                passive_perception=self.passive_perception,
+                passive_initiative=self.passive_initiative,
                 skills=self.skills,
                 senses=self.senses,
                 languages=self.languages,
@@ -1152,7 +1175,6 @@ class query:
                 "kind": self.kind,
                 "alignment": self.alignment,
                 "armor_class": self.armor_class,
-                "initiative": self.initiative,
                 "hit_points": self.hit_points,
                 "speed": self.speed,
                 "strength": self.strength,
@@ -1173,6 +1195,9 @@ class query:
                 "charisma": self.charisma,
                 "charisma_modifier": self.charisma_modifier,
                 "charisma_save": self.charisma_save,
+                "initiative_modifier": self.initiative_modifier,
+                "passive_perception": self.passive_perception,
+                "passive_initiative": self.passive_initiative,
                 "skills": self.skills,
                 "senses": self.senses,
                 "languages": self.languages,
@@ -2457,6 +2482,30 @@ class tests:
         assert isinstance(m.traits[0], model.Trait)
         # Model.Trait.description is plain str (Content lives on the query side)
         assert isinstance(m.traits[0].description, str)
+
+    @staticmethod
+    def test_invisible_stalker_initiative_and_passives(doc):
+        # Normal creature; score carries +5 from the Invisible condition (Advantage on Initiative).
+        c = doc.creatures["invisible-stalker"]
+        assert c.initiative_modifier == 7, f"init_mod {c.initiative_modifier!r}"
+        assert c.passive_initiative == 22, f"passive_init {c.passive_initiative!r}"
+        assert c.passive_perception == 18, f"passive_perc {c.passive_perception!r}"
+
+    @staticmethod
+    def test_gray_ooze_initiative_erratum(doc):
+        # SRD prints score 13 (erratum, preserved in source text); data-fix corrects to 8.
+        c = doc.creatures["gray-ooze"]
+        assert c.initiative_modifier == -2, f"init_mod {c.initiative_modifier!r}"
+        assert c.passive_initiative == 8, f"passive_init {c.passive_initiative!r} (should be data-fix 8, not 13)"
+        assert c.passive_perception == 8, f"passive_perc {c.passive_perception!r}"
+
+    @staticmethod
+    def test_conjured_template_omits_initiative(doc):
+        # Conjured/scalable stat blocks have no Initiative entry -> None; passive perception still present.
+        c = doc.creatures["animated-object"]
+        assert c.initiative_modifier is None, f"init_mod {c.initiative_modifier!r}"
+        assert c.passive_initiative is None, f"passive_init {c.passive_initiative!r}"
+        assert c.passive_perception == 6, f"passive_perc {c.passive_perception!r}"
 
     @staticmethod
     def test_chain_devil_unnerving_gaze_intact(doc):
